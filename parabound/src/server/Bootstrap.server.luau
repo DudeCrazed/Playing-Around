@@ -261,6 +261,8 @@ Run.Heartbeat:Connect(function(dt)
     if tr.MotionX and st.IFrameUntil<t then
      local velocity=st.ExpectedLaunchVelocity or Vector3.zero
      local speed=st.LaunchUntil>t and math.max(65,math.abs(velocity.X)+25) or st.DashUntil>t and 60 or 28
+     -- Knockback/dash speed outlives LaunchUntil/DashUntil on the owner; budget from the decaying impulse allowance.
+     speed=math.max(speed,engine:SpeedAllowance(st,tr.MotionTime))
      local ok,ping=pcall(function()return p:GetNetworkPing()end);ping=ok and math.clamp(ping,0,.15) or .05
      local budget=speed*(t-tr.MotionTime+ping)+1.2
      if math.abs(r.Position.X-tr.MotionX)>budget then
@@ -283,7 +285,9 @@ Run.Heartbeat:Connect(function(dt)
    local positioning=active or (isLesson and d and d.Step==4)
    local speed=positioning and (math.abs(dx)>4.6 and sign*(active and 16 or 12) or 0) or 0
    if math.abs(dx)<2.7 and b.Practice then speed=-sign*7 end
-   st.Facing=sign
+   if not engine:FacingLocked(st) then st.Facing=sign end
+   -- A parry press enters held guard until GuardEnd; bots must release like a tapped input.
+   if b.ReleaseGuardAt and t>=b.ReleaseGuardAt then b.ReleaseGuardAt=nil;engine:Intent(m,'GuardEnd',{}) end
    local blocked=t<(st.StunUntil or 0) or t<(st.HitStopUntil or 0) or t<(st.DashUntil or 0) or t<(st.LaunchUntil or 0)
    if not blocked then
     local vx=r.AssemblyLinearVelocity.X;local rate=math.abs(speed)>0 and 100 or 160
@@ -296,7 +300,7 @@ Run.Heartbeat:Connect(function(dt)
    end
    if b.Practice and t>b.NextDecision then
     b.NextDecision=t+.22;local ts=engine:Get(target)
-    if ts and ts.Pending and t-ts.Pending.Started>.13 and math.abs(dx)<7 and b.Random:NextNumber()<.18 then engine:Intent(m,'Parry',{}) end
+    if ts and ts.Pending and t-ts.Pending.Started>.13 and math.abs(dx)<7 and b.Random:NextNumber()<.18 then if engine:Intent(m,'Parry',{}) then b.ReleaseGuardAt=t+.2 end end
     if ts and ts.Airborne and not st.Airborne and math.abs(dx)<13 and t>b.NextJump and b.Random:NextNumber()<.2 then engine:Intent(m,'Jump',{});b.NextJump=t+2 end
    end
    if s.Mode=='Crucible' then if r.Position.Y< -12 or r.Position.X<s.Arena.MinX-16 or r.Position.X>s.Arena.MaxX+16 then knockout(m,s) end

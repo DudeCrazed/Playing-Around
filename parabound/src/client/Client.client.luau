@@ -38,12 +38,14 @@ local predictedJumps, lastJumpPrediction, nextDashPrediction = 0, -math.huge, 0
 local localDashUntil, packetDashUntil, packetLaunchUntil, packetHitStopUntil = 0, 0, 0, 0
 local groundStableFor, localInputBusyUntil, lastImpulseSerial, impulseEpoch = 0, 0, 0, -math.huge
 local predictions = {Jump = {}, Dash = {}}
+local frozenLocalVelocity = nil
 local function resetMotionPrediction()
  predictedJumps, lastJumpPrediction, nextDashPrediction = 0, -math.huge, 0
  localDashUntil, packetDashUntil, packetLaunchUntil, packetHitStopUntil = 0, 0, 0, 0
  groundStableFor, localInputBusyUntil, lastImpulseSerial = 0, 0, 0
  impulseEpoch = World:GetServerTimeNow()
  predictions = {Jump = {}, Dash = {}}
+ frozenLocalVelocity = nil
 end
 local mapIndex = 1
 local function send(action, payload)
@@ -123,7 +125,9 @@ local function fighterCard(side)
  stock.TextXAlignment = Enum.TextXAlignment.Right; stock.Position = UDim2.new(.6, 0, 0, 24); stock.Size = UDim2.new(.4, -10, 0, 24)
  local track = frame(c, UDim2.new(1, -20, 0, 4), UDim2.fromOffset(10, 58), BORDER)
  local fill = frame(track, UDim2.fromScale(1, 1), nil, GOLD)
- return {Frame = c, Name = n, Impact = impact, Stocks = stock, Guard = fill}
+ local resonanceTrack = frame(c, UDim2.new(1, -20, 0, 3), UDim2.fromOffset(10, 64), BORDER)
+ local resonance = frame(resonanceTrack, UDim2.fromScale(1, 1), nil, Color3.fromRGB(124, 194, 218))
+ return {Frame = c, Name = n, Impact = impact, Stocks = stock, Guard = fill, Resonance = resonance}
 end
 local ownCard, rivalCard = fighterCard("left"), fighterCard("right")
 local mapTitle = label(hud, "PARABOUND", 12, CREAM)
@@ -484,7 +488,8 @@ net.Effect.OnClientEvent:Connect(function(kind, data)
    for i = #pending, 1, -1 do if now - pending[i].At > 1 then table.remove(pending, i) end end
    for i, prediction in ipairs(pending) do
     if action ~= "Jump" or prediction.Count == data.JumpCount then
-     predicted = now - prediction.At < .22
+     -- Already applied locally (pending entries expire after 1s); re-applying at high ping double-boosts.
+     predicted = true
      table.remove(pending, i); break
     end
    end
@@ -494,7 +499,18 @@ net.Effect.OnClientEvent:Connect(function(kind, data)
    for _, prediction in ipairs(predictions.Jump) do newestCount = math.max(newestCount, prediction.Count) end
    predictedJumps = newestCount
   end
-  if not predicted then root.AssemblyLinearVelocity = data.Velocity end
+  if not predicted then
+   -- The owner is authoritative on the axis an impulse does not set; the server's copy is stale by replication.
+   local velocity, current = data.Velocity, root.AssemblyLinearVelocity
+   if action == "Jump" or action == "Drop" or action == "FastFall" then velocity = Vector3.new(current.X, velocity.Y, 0)
+   elseif action == "Dash" then velocity = Vector3.new(velocity.X, current.Y, 0)
+   elseif action == "Freeze" then frozenLocalVelocity = current
+   elseif action == "Restore" then
+    if data.Resume == true and frozenLocalVelocity then velocity = frozenLocalVelocity end
+    frozenLocalVelocity = nil
+   end
+   root.AssemblyLinearVelocity = velocity
+  end
   if action == "Launch" or action == "Freeze" then localDashUntil = 0 end
   if action == "Restore" then packetHitStopUntil = 0 end
   idleHoldX = nil
@@ -525,6 +541,22 @@ net.Effect.OnClientEvent:Connect(function(kind, data)
    shard(pos + Vector3.new(0, .4, .4), Vector3.new(.24, .11, .12), color, Vector3.new(facing * (1.1 + i * .18), vertical, 0), .17)
   end
   if setting("CameraShake") then shakeUntil = os.clock() + .09; shakePower = parry and .035 or .055 end
+ elseif kind == "Arcana" then
+  local school = Content.Schools[data.School]
+  local color = school and school.Color or GOLD
+  local count = setting("ReducedFlashes") and 3 or 6
+  for i = 1, count do
+   shard(pos + Vector3.new(facing * 1.2, .6, .4), Vector3.new(.22, .22, .12), color, Vector3.new(facing * (1.4 + i * .55), (i % 2 == 0 and .35 or -.35), 0), .22)
+  end
+ elseif kind == "Block" then
+  shard(pos + Vector3.new(-facing * .9, .5, .4), Vector3.new(.3, .3, .12), MUTED, Vector3.new(facing * .4, 0, 0), .12)
+ elseif kind == "KO" then
+  local count = setting("ReducedFlashes") and 4 or 8
+  for i = 1, count do
+   local angle = (i / count) * math.pi * 2
+   shard(pos, Vector3.new(.3, .3, .14), CREAM, Vector3.new(math.cos(angle) * 3, math.sin(angle) * 3, 0), .35)
+  end
+  if setting("CameraShake") then shakeUntil = os.clock() + .12; shakePower = .07 end
  end
 end)
 
@@ -557,13 +589,14 @@ local function opponent(character, root)
  return nearest
 end
 local function updateCard(card, model, name)
- if not model then card.Name.Text = name; card.Impact.Text = "—"; card.Stocks.Text = ""; card.Guard.Size = UDim2.fromScale(0, 1); return end
+ if not model then card.Name.Text = name; card.Impact.Text = "—"; card.Stocks.Text = ""; card.Guard.Size = UDim2.fromScale(0, 1); card.Resonance.Size = UDim2.fromScale(0, 1); return end
  card.Name.Text = name
  card.Impact.Text = tostring(math.floor((tonumber(model:GetAttribute("Impact")) or 0) + .5)) .. "%"
  local stocks = math.clamp(tonumber(model:GetAttribute("Stocks")) or 3, 0, 3)
  local diamonds = {}; for i = 1, 3 do table.insert(diamonds, i <= stocks and "◆" or "◇") end
  card.Stocks.Text = table.concat(diamonds, " ")
  card.Guard.Size = UDim2.fromScale(math.clamp((tonumber(model:GetAttribute("Guard")) or 100) / 100, 0, 1), 1)
+ card.Resonance.Size = UDim2.fromScale(math.clamp((tonumber(model:GetAttribute("Resonance")) or 100) / 100, 0, 1), 1)
 end
 local rigConnections = {}
 local function clearRigConnections()
@@ -695,7 +728,7 @@ local function layoutForViewport(viewport)
  hud.Position = UDim2.fromOffset(14, compactLayout and 44 or 64)
  hud.Size = UDim2.new(1, -28, 0, compactLayout and 44 or 76)
  for _, card in ipairs({ownCard, rivalCard}) do
-  card.Frame.Size = UDim2.new(compactLayout and .23 or .26, 0, 0, compactLayout and 42 or 70)
+  card.Frame.Size = UDim2.new(compactLayout and .23 or .26, 0, 0, compactLayout and 46 or 70)
   card.Name.Position = UDim2.fromOffset(compactLayout and 6 or 10, compactLayout and 1 or 5)
   card.Name.Size = UDim2.new(1, compactLayout and -12 or -20, 0, compactLayout and 14 or 19)
   card.Impact.Position = UDim2.fromOffset(compactLayout and 6 or 10, compactLayout and 15 or 24)
@@ -704,6 +737,8 @@ local function layoutForViewport(viewport)
   card.Stocks.Size = UDim2.new(.4, compactLayout and -6 or -10, 0, compactLayout and 17 or 24)
   card.Guard.Parent.Position = UDim2.fromOffset(compactLayout and 6 or 10, compactLayout and 39 or 58)
   card.Guard.Parent.Size = UDim2.new(1, compactLayout and -12 or -20, 0, compactLayout and 3 or 4)
+  card.Resonance.Parent.Position = UDim2.fromOffset(compactLayout and 6 or 10, compactLayout and 43 or 64)
+  card.Resonance.Parent.Size = UDim2.new(1, compactLayout and -12 or -20, 0, compactLayout and 2 or 3)
  end
  mapTitle.Position = UDim2.new(.25, 0, 0, compactLayout and 0 or 7)
  mapTitle.Size = UDim2.new(.50, 0, 0, compactLayout and 16 or 20)
@@ -771,8 +806,10 @@ local renderConnection = RunService.RenderStepped:Connect(function(dt)
    clockText.Text = string.format("%d:%02d", math.floor(remaining / 60), remaining % 60)
   else clockText.Text = queueText and "PLAYER DUEL SEARCH" or string.upper(tostring(arena and arena.Mode or "SHORT TUTORIAL")) end
   local remaining = tonumber(character:GetAttribute("CD_Arcana1")) or math.max(0, (tonumber(character:GetAttribute("CooldownArcana1")) or 0) - now)
-  abilityText.Text = (touch and "RESONANCE CUT" or preferredGamepad and "RT · RESONANCE CUT" or "E · RESONANCE CUT") .. (remaining > .05 and string.format("  %.1fs", remaining) or "  READY")
-  if touchButtons.SURGE then touchButtons.SURGE.Text = remaining > .05 and string.format("SURGE\n%.1fs", remaining) or "SURGE" end
+  local costs = Content.ResonanceCosts or {}
+  local starved = (tonumber(character:GetAttribute("Resonance")) or 100) < (costs.Arcana1 or 24)
+  abilityText.Text = (touch and "RESONANCE CUT" or preferredGamepad and "RT · RESONANCE CUT" or "E · RESONANCE CUT") .. (remaining > .05 and string.format("  %.1fs", remaining) or starved and "  NEEDS RESONANCE" or "  READY")
+  if touchButtons.SURGE then touchButtons.SURGE.Text = remaining > .05 and string.format("SURGE\n%.1fs", remaining) or starved and "SURGE\nLOW" or "SURGE" end
   for name, key in pairs({DASH = "CD_Dash", PARRY = "CD_Parry"}) do
    local cd = tonumber(character:GetAttribute(key)) or 0
    if touchButtons[name] then touchButtons[name].Text = cd > .05 and string.format("%s\n%.1fs", name, cd) or name end

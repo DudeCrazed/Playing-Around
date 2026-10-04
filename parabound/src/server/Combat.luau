@@ -5,6 +5,10 @@ local Content = require(game:GetService("ReplicatedStorage"):WaitForChild("PARAB
 local Combat = {}; Combat.__index = Combat
 local PARRY_TIME, PERFECT_TIME, MISS_RECOVERY = .16, .075, .18
 local COYOTE_TIME, JUMP_BUFFER, ACTIVE_TIME = .12, .13, .07
+local COSTS = Content.ResonanceCosts or {Light=0,Heavy=10,Dash=8,Arcana1=24}
+local RESONANCE_REGEN = Content.ResonanceRegen or 6
+-- Mirrors Client.client.luau: launched flight holds speed for LaunchUntil, then air approach() decelerates at 70.
+local LAUNCH_HOLD, AIR_DECELERATION, SPEED_MARGIN = .35, 70, 25
 local TIMINGS = {
  Longblade={Light=.16,Heavy=.30,LightRecovery=.20,HeavyRecovery=.32,Range=7},
  TwinFangs={Light=.12,Heavy=.24,LightRecovery=.17,HeavyRecovery=.26,Range=6},
@@ -63,7 +67,7 @@ function Combat:Reset(model)
  s.Health,s.Guard,s.Resonance,s.Overtone,s.Impact=s.MaxHealth,100,100,0,0
  s.Dead,s.Guarding,s.WantsGuard,s.Airborne=false,false,false,false
  s.Facing=s.Facing or 1; s.JumpCount,s.Combo,s.LastHit=0,0,0
- s.Cooldowns={}; s.Pending=nil; s.BufferedAction=nil; s.FreezeVelocity=nil; s.ExpectedLaunchVelocity=nil; s.LastImpulseVelocity=nil; s.LastImpulseAction=nil; s.LastImpulseAt=nil
+ s.Cooldowns={}; s.Pending=nil; s.BufferedAction=nil; s.FreezeVelocity=nil; s.FreezeFromLaunch=nil; s.SpeedAllowance=nil; s.SpeedAllowanceAt=nil; s.ExpectedLaunchVelocity=nil; s.LastImpulseVelocity=nil; s.LastImpulseAction=nil; s.LastImpulseAt=nil
  for _,key in ipairs({"BusyUntil","ParryUntil","ParryStarted","ParryRecoverUntil","AttackUntil","AttackStarted","AttackHitAt","TellAt","StunUntil","DashUntil","LaunchUntil","HitStopUntil","IFrameUntil","SlowUntil","JumpBufferedUntil","GroundIgnoreUntil","ActionStart","ActionEnd"}) do s[key]=0 end
  s.ParryResolved=false; s.LastGrounded=-math.huge; s.AttackState=nil; s.ShieldUntil=nil
  local hum=humOf(model); if hum then hum.MaxHealth=s.MaxHealth; hum.Health=s.Health end
@@ -79,9 +83,26 @@ function Combat:_canAct(s) return alive(s) and self.Clock>=s.BusyUntil and self.
 function Combat:_cooldown(s,key,duration)
  if (s.Cooldowns[key] or 0)>self.Clock then return false end; s.Cooldowns[key]=self.Clock+duration; return true
 end
+function Combat:FacingLocked(s)
+ -- Facing is committed through an attack's active frames and while parrying or guarding,
+ -- so held movement cannot swing a hitbox behind the attacker or turn a guard away from a threat.
+ if not s then return false end
+ return (s.Pending~=nil and self.Clock<s.Pending.ActiveUntil) or self.Clock<(s.ParryUntil or 0) or s.WantsGuard==true
+end
+function Combat:_faceThreat(s)
+ local root=rootOf(s.Model); if not root then return end
+ local best,bestDistance
+ for model,other in pairs(self.States) do
+  if other~=s and alive(other) and other.Mode==s.Mode and other.Arena==s.Arena and (not s.Team or not other.Team or other.Team~=s.Team) then
+   local r=rootOf(model); local d=r and math.abs(r.Position.X-root.Position.X)
+   if d and d<=16 and (not bestDistance or d<bestDistance) then best,bestDistance=r,d end
+  end
+ end
+ if best and bestDistance>.05 then s.Facing=best.Position.X>=root.Position.X and 1 or -1 end
+end
 function Combat:_facing(s,direction)
  local x=typeof(direction)=="Vector3" and direction.X or direction
- if not finite(x) or math.abs(x)<.05 then return end
+ if not finite(x) or math.abs(x)<.05 or self:FacingLocked(s) then return end
  s.Facing=x>=0 and 1 or -1
  -- Facing flips sprite art, while the upright physical collider keeps a fixed orientation.
 end
@@ -89,14 +110,20 @@ function Combat:_cancel(s)
  s.Pending=nil; s.BufferedAction=nil; s.AttackState=nil; s.AttackUntil=0; s.AttackHitAt=0; s.TellAt=0
  s.ActionStart=self.Clock; s.ActionEnd=self.Clock
 end
-function Combat:_impulse(s,velocity,action)
+function Combat:SpeedAllowance(s,at)
+ -- Horizontal speed an owner can legitimately still carry from authoritative impulses at server time `at`.
+ if not s or not s.SpeedAllowance then return 0 end
+ return math.max(0,s.SpeedAllowance-AIR_DECELERATION*math.max(0,(at or self.Clock)-s.SpeedAllowanceAt-LAUNCH_HOLD))
+end
+function Combat:_impulse(s,velocity,action,resume)
  local root=rootOf(s.Model); if not root then return false end
+ s.SpeedAllowance=math.max(self:SpeedAllowance(s,self.Clock),math.abs(velocity.X)+SPEED_MARGIN); s.SpeedAllowanceAt=self.Clock
  if not s.Player then root.AssemblyLinearVelocity=velocity end
  s.ImpulseSerial=math.max(s.ImpulseSerial or 0,s.Model:GetAttribute("ImpulseSerial") or 0)+1
  s.Model:SetAttribute("ImpulseSerial",s.ImpulseSerial)
  s.LastImpulseVelocity=velocity; s.LastImpulseAction=action; s.LastImpulseAt=self.Clock
  -- Only this server constructs impulse packets; the owning client applies each serial once.
- self:_effect("Impulse",{Model=s.Model,Velocity=velocity,Action=action,Serial=s.ImpulseSerial,IssuedAt=self.Clock,
+ self:_effect("Impulse",{Model=s.Model,Velocity=velocity,Action=action,Serial=s.ImpulseSerial,IssuedAt=self.Clock,Resume=resume or nil,
   JumpCount=s.JumpCount,DashUntil=s.DashUntil,LaunchUntil=s.LaunchUntil,HitStopUntil=s.HitStopUntil,GroundIgnoreUntil=s.GroundIgnoreUntil,ArenaId=s.Model:GetAttribute("ArenaId")})
  return true
 end
@@ -104,7 +131,10 @@ function Combat:_freeze(s,duration)
  local root=rootOf(s.Model); local starting=root and not s.FreezeVelocity
  if starting then
   -- A just-issued launch has not reached its network owner yet; keep that intended impulse.
-  s.FreezeVelocity=s.LastImpulseAction=="Launch" and s.LastImpulseAt==self.Clock and s.LastImpulseVelocity or root.AssemblyLinearVelocity
+  local launch=s.LastImpulseAction=="Launch" and s.LastImpulseAt==self.Clock
+  s.FreezeVelocity=launch and s.LastImpulseVelocity or root.AssemblyLinearVelocity
+  -- Server-observed owner velocity is stale by replication; only launches are authoritative on restore.
+  s.FreezeFromLaunch=launch
  end
  s.HitStopUntil=math.max(s.HitStopUntil,self.Clock+duration)
  if starting then self:_impulse(s,Vector3.zero,"Freeze") end
@@ -117,7 +147,7 @@ function Combat:_launch(s,target,attack,scale)
  local velocity=Vector3.new(sign*attack.Knockback*impactScale,math.min(attack.Knockback*.54*impactScale,56),0)
  target.ExpectedLaunchVelocity=velocity
  target.Airborne=true; target.JumpCount=math.max(target.JumpCount,1); target.LaunchUntil=self.Clock+(scale and .16 or .35); target.GroundIgnoreUntil=target.LaunchUntil
- if target.FreezeVelocity then target.FreezeVelocity=velocity else self:_impulse(target,velocity,"Launch") end
+ if target.FreezeVelocity then target.FreezeVelocity=velocity; target.FreezeFromLaunch=true else self:_impulse(target,velocity,"Launch") end
 end
 function Combat:_hit(s,p)
  local root=rootOf(s.Model); if not root then return end
@@ -204,11 +234,12 @@ function Combat:Intent(model,action,payload)
   -- Releasing stops the held guard, while a tap keeps its initial counter window.
   self:_attr(s); return true
  end
- if payload.direction~=nil then self:_facing(s,payload.direction) end
+ if payload.direction~=nil and action~="Parry" and action~="Guard" then self:_facing(s,payload.direction) end
  if action=="Parry" or action=="Guard" then
   if s.WantsGuard then return action=="Guard" end
   if not self:_canAct(s) or s.Guard<10 or not self:_cooldown(s,"Parry",.38) then return false end
   local age=finite(payload.timestamp) and clamp(self.Clock-payload.timestamp,0,.08) or 0
+  self:_faceThreat(s)
   s.Guard-=10; s.ParryCompensated=age; s.ParryStarted=self.Clock-age; s.ParryUntil=self.Clock+PARRY_TIME-age
   s.ParryResolved=false; s.ParryRecoverUntil=s.ParryUntil+MISS_RECOVERY; s.WantsGuard=true; s.Guarding=false; s.BusyUntil=s.ParryUntil
   s.ActionStart=self.Clock; s.ActionEnd=s.ParryRecoverUntil
@@ -216,15 +247,16 @@ function Combat:Intent(model,action,payload)
  elseif action=="Feint" then
   if s.Pending and self.Clock<s.Pending.TellAt then self:_cancel(s); s.BusyUntil=self.Clock+.08; s.Cooldowns.Attack=s.BusyUntil; self:_effect("Feint",{Model=model}); self:_attr(s); return true end; return false
  elseif action=="Dash" then
-  if not self:_canAct(s) or s.Resonance<8 or not self:_cooldown(s,"Dash",.65) then return false end
+  if not self:_canAct(s) or s.Resonance<COSTS.Dash or not self:_cooldown(s,"Dash",.65) then return false end
   local root=rootOf(model); if not root then return false end
-  s.Resonance-=8; s.DashUntil=self.Clock+.16; s.IFrameUntil=self.Clock+.10; s.ActionStart=self.Clock; s.ActionEnd=s.DashUntil
+  s.Resonance-=COSTS.Dash; s.DashUntil=self.Clock+.16; s.IFrameUntil=self.Clock+.10; s.ActionStart=self.Clock; s.ActionEnd=s.DashUntil
   self:_impulse(s,Vector3.new(s.Facing*44,root.AssemblyLinearVelocity.Y,0),"Dash")
   self:_effect("Dash",{Model=model}); self:_attr(s); return true
  elseif action=="Jump" then
   if s.Airborne and s.JumpCount>=2 then
    local root=rootOf(model); local landing=root and self.Clock>=s.GroundIgnoreUntil and root.AssemblyLinearVelocity.Y<=1.5 and self:_ground(s)
-   if not landing then return false end
+   -- Still rejected now, but buffered so a press just before the server sees the landing is not lost.
+   if not landing then s.JumpBufferedUntil=self.Clock+JUMP_BUFFER; return false end
   end
   s.JumpBufferedUntil=self.Clock+JUMP_BUFFER
   if self:_canAct(s) then
@@ -247,13 +279,13 @@ function Combat:Intent(model,action,payload)
    return false
   end
   local w=Content.Weapons[s.Weapon]; local t=TIMINGS[s.Weapon] or {Light=w.Startup,Heavy=w.Startup*1.4,LightRecovery=w.Recovery,HeavyRecovery=w.Recovery*1.3,Range=math.min(w.Range,9)}
-  local heavy=action=="Heavy"; local cost=heavy and 14 or 7
+  local heavy=action=="Heavy"; local cost=COSTS[action] or 0
   if s.Resonance<cost or (s.Cooldowns.Attack or 0)>self.Clock then return false end
   s.Resonance-=cost
   self:_beginAttack(s,{Damage=w.Damage*(heavy and 1.5 or 1),Range=t.Range,Knockback=w.Knockback*(heavy and 1.4 or 1),Stun=heavy and .27 or .18,Heavy=heavy,Vertical=s.Airborne and 4.5 or 3.5},action,t[action],t[action.."Recovery"]); return true
  elseif action=="Arcana1" then
-  if not self:_canAct(s) or s.Resonance<24 or not self:_cooldown(s,"Arcana1",5) then return false end
-  s.Resonance-=24
+  if not self:_canAct(s) or s.Resonance<COSTS.Arcana1 or not self:_cooldown(s,"Arcana1",5) then return false end
+  s.Resonance-=COSTS.Arcana1
   self:_beginAttack(s,{Damage=13,Range=12,Knockback=24,Stun=.20,Vertical=3.5},action,.32,.30,true)
   self:_effect("Arcana",{Model=model,Position=rootOf(model) and rootOf(model).Position,School=s.School,Ability=Content.Schools[s.School].Abilities[1],Radius=3}); return true
  end
@@ -263,7 +295,7 @@ function Combat:Step(dt)
  dt=clamp(tonumber(dt) or 0,0,.1); self.Clock=Workspace:GetServerTimeNow()
  for _,s in pairs(self.States) do
   if alive(s) then
-   s.Resonance=clamp(s.Resonance+dt*4,0,100)
+   s.Resonance=clamp(s.Resonance+dt*RESONANCE_REGEN,0,100)
    if s.ParryUntil>0 and self.Clock>=s.ParryUntil then s.ParryUntil=0; if not s.ParryResolved then s.BusyUntil=math.max(s.BusyUntil,s.ParryRecoverUntil) end end
    s.Guarding=s.WantsGuard and s.Guard>0 and s.ParryUntil==0 and self.Clock>=s.BusyUntil and self.Clock>=s.StunUntil
    s.Guard=clamp(s.Guard+dt*(s.Guarding and -7 or 10),0,100)
@@ -286,7 +318,7 @@ function Combat:Step(dt)
      -- Player-owned assemblies freeze locally from the packet/attribute; NPCs simulate here.
      if not s.Player then root.AssemblyLinearVelocity=Vector3.zero end
     elseif s.FreezeVelocity then
-     local velocity=s.FreezeVelocity; s.FreezeVelocity=nil; self:_impulse(s,velocity,"Restore")
+     local velocity,resume=s.FreezeVelocity,not s.FreezeFromLaunch; s.FreezeVelocity=nil; s.FreezeFromLaunch=nil; self:_impulse(s,velocity,"Restore",resume)
     end
     local floor=self:_ground(s)
     local grounded=floor~=nil and self.Clock>=s.GroundIgnoreUntil and root.AssemblyLinearVelocity.Y<=1.5 and self.Clock>=s.HitStopUntil

@@ -29,4 +29,8 @@ C.Weapons.TwinFangs.Startup=.12;C.Weapons.TwinFangs.Recovery=.17;C.Weapons.TwinF
 C.Weapons.Spear.Startup=.20;C.Weapons.Spear.Recovery=.23;C.Weapons.Spear.Range=9;C.Weapons.Spear.Damage=11
 C.Weapons.Greatblade.Startup=.30;C.Weapons.Greatblade.Recovery=.35;C.Weapons.Greatblade.Range=7.5;C.Weapons.Greatblade.Damage=15
 C.Schools.Ember.Abilities={'Resonance Cut'}
+-- Shared by server validation and the client HUD. Light attacks are the core verb and stay free;
+-- regeneration must sustain ordinary heavy/dash use across a 3-stock duel.
+C.ResonanceCosts={Light=0,Heavy=10,Dash=8,Arcana1=24}
+C.ResonanceRegen=6
 return C
