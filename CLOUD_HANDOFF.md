@@ -1,179 +1,165 @@
-# PARABOUND — Phase 1 Cloud Handoff
+# PARABOUND — Phase 1 Cloud Handoff (rev 2)
 
-**Status: BLOCKED. No source was supplied, so no code was changed.**
-Date: 2026-10-04 · Environment: remote Claude Code cloud container (Linux), no Roblox Studio, no Studio MCP, no access to `/Users/bobby4abby/...`.
+**Status:** source received and traced. **8 confirmed defects fixed**, compiled, and covered by offline checks that fail on the original code and pass on the patched code. **Studio and playtests were not run** (no Studio in this cloud container).
+
+Revision 1 of this file (commit `9e59fcf`) was written before the source arrived. Its suspected causes have now been checked against the code: §5 lists the ones that were ruled out.
 
 ---
 
 ## 1. Source snapshot
 
-| Item | Result |
+| Item | Value |
 |---|---|
-| Repository | `DudeCrazed/Playing-Around`, branch `claude/laughing-newton-7a8z9n` |
-| Base commit | `50c99387482be6a5b43d1f2c28ef28c3026e1511` ("Initial commit"), which contains only `README.md` (60 bytes) |
-| `CLOUD_SOURCE_BUNDLE.md` | **Not present.** I searched the repo and the whole container filesystem by name. |
-| PARABOUND ZIP / `.luau` / `.rbxl(x)` | **None found** anywhere in the container |
-| Other account repos | `DiaNutri`, `topops-field-ops`, `TheChaosHub-AFK-Bot`, `Playing-Around`. None of them is PARABOUND. |
-| Source hashes | N/A. There is nothing to hash. |
+| Bundle | `CLOUD_SOURCE_BUNDLE.zip`, sha256 `49feb0f708a5c0b8327bfbb2334b9f7290fa00d3d76428edf9920f5a02029c5d` |
+| Baseline (unmodified import) | commit `8b2d3e5` → `parabound/` on branch `claude/laughing-newton-7a8z9n` |
+| Fixes | commit `d948848` |
+| Portable patch | `parabound/patches/phase1-fixes.patch`. Apply from the local `PARABOUND/` root with `git apply` or `patch -p1`. |
 
-The six Luau modules, the docs and the tests never reached this environment.
+Baseline file sha256 (first 16 hex):
 
-## 2. Implemented fixes and affected interfaces
+| File | sha256 | File | sha256 |
+|---|---|---|---|
+| `src/client/Client.client.luau` | `b5f647b06c017d38` | `src/shared/Content.luau` | `91f5118c5962afde` |
+| `src/server/Bootstrap.server.luau` | `64e1d0da22ad661f` | `src/shared/PixelRenderer.luau` | `10b06e6435db0c0b` |
+| `src/server/Combat.luau` | `110e37cdc5434b51` | `tests/CombatQA.luau` | `a1609dc99564c934` |
+| `src/server/World.luau` | `c73f0f062645ed57` | `tests/MultiplayerQA.server.luau` | `58120bc91de91a5a` |
 
-**None.** I did not write patches for code I could not read. A guessed diff against unknown symbols would not apply, and it could break working code. No interfaces changed.
+`Install.luau`, `PARABOUND.rbxl` and `QA_RESULTS.json` evidence stay local. **Install.luau must be regenerated** from the patched modules.
 
-## 3. Checks actually run
+## 2. Core action trace (as found)
+
+`Client.combat()` → `send(action, {direction}, GetServerTimeNow(), seq)` → `Bootstrap.handle` (rate limit; injects `payload.timestamp`) → `Combat:Intent` (whitelist, `_canAct`, cooldown, Resonance) → `Combat:Step` (startup, Tell, active-window `_hit`, buffer, ground, hit-stop) → `_impulse` (serial packet; bots get a server velocity write) → `Net.Effect:FireAllClients` → client `Impulse` handler (serial/ArenaId/epoch filtered, matched against predictions) and `_attr` attributes → `PixelRenderer` poses from `AttackState`/`AttackHitAt`/`DashUntil`/… on render.
+
+Movement runs on the owning client in `PreSimulation`. The server checks it every 0.1 s in `Bootstrap` Heartbeat (anti-teleport) and enforces the lane.
+
+## 3. Confirmed defects fixed (ranked by playability)
+
+Line numbers refer to the **baseline** files.
+
+| # | Symptom | Evidence | Fix |
+|---|---|---|---|
+| **F1** | Rubber-banding after strong hits and air dashes. Ring-outs fail at high Impact. | `Bootstrap.server.luau:259-270`: the speed budget is 28 st/s once `LaunchUntil` (0.35 s) or `DashUntil` (0.16 s) ends. But the client keeps launch speed for 0.35 s and then slows at only 70 st/s² (`Client:638-658`). At 100% Impact a Longblade light launches at 56 st/s, so it still travels about 5 studs per 0.1 s after the launch ends, against a 4-stud budget. The server then **snaps the player back and zeroes X velocity**. | `Combat:SpeedAllowance(s, at)`: every impulse raises a per-fighter allowance to \|vX\|+25. It holds through the launch window, then decays at the client's 70 st/s². The validator budgets with `max(old rule, allowance)`. |
+| **F2** | "Attacks and abilities don't work". The bot goes passive after about 20 s. | Light costs 7, Heavy 14, Dash 8 and Arcana 24, but Resonance regenerates only 4/s (`Combat:250-255,266`). Mashing lights spends about 16/s. The bot spends about 9.6/s and is dry around 17 s (`Bootstrap:293-296`). Rejections are silent, there is **no Resonance HUD**, and the ability label said READY whenever the cooldown was done (`Client:773-775`). | `Content.ResonanceCosts` = Light **0**, Heavy **10**, Dash 8, Arcana1 24; `ResonanceRegen` **6**/s. Server and HUD share these values. Added a Resonance bar to both fighter cards, and a "NEEDS RESONANCE" / "SURGE LOW" state. |
+| **F3** | Hitboxes swing behind the attacker. Parries and guards fail while backing off. | `Combat:_facing` accepts every `Move` (sent at 10 Hz) and every payload `direction`, even mid-attack (`:200-207`). `_hit` uses the current facing (`:129`), and the parry/guard "front" check uses the defender's facing (`:131`). So reversing during startup whiffs, and retreating while parrying gets you hit. **Reproduced offline.** | `Combat:FacingLocked(s)`: facing is fixed through an attack's active frames, the parry window and held guard. Parry/Guard ignore the retreat direction and face the nearest hostile within 16 studs (`_faceThreat`). |
+| **F4** | The practice bot "turtles" and stops parrying. | The bot sends `Parry` and never `GuardEnd` (`Bootstrap:299`). `WantsGuard` stays true, so it holds guard and every later parry returns false (`Combat:209`) until its next attack clears it. | The bot sends `GuardEnd` 0.2 s after an accepted parry, and respects `FacingLocked`. |
+| **F5** | Attackers float or re-boost after air hits, and parry winners lurch (grows with latency). | For a non-launch hit-stop, `_freeze` stores the server's *replicated* copy of the owner's velocity (`:107`). That copy is stale by at least RTT/2, and Restore writes it back (`:288-289`). | The Restore packet now carries `Resume=true` for non-launch freezes. The owner caches its own velocity when Freeze arrives and restores that. Launch restores stay server-authoritative (invariant kept). |
+| **F6** | Double-height jumps and double dashes at high ping. | The client treats a matched prediction as already applied only if it is under 0.22 s old (`Client:487`). Above about 220 ms RTT, the server packet re-applies `Y=44` / `X=44`. Unpredicted packets also overwrite the other axis with the server's stale value (`:497`). | A matched prediction (pending entries already expire at 1 s) is never re-applied. An unpredicted Jump/Drop/FastFall keeps the local X; a Dash keeps the local Y. |
+| **F7** | A jump pressed just before landing is lost. | `Intent("Jump")` returns false without buffering while the server hasn't yet seen the landing (`Combat:225-228`). | Still returns false (the existing "Third jump rejected" contract holds) but sets `JumpBufferedUntil`. The existing Step buffer fires it only once the server confirms grounding. |
+| **F8** | Resonance Cut, blocks and KOs show no feedback. | The server emits `Arcana`, `Block` and `KO` (`Combat:144,258`, `Bootstrap:157`), but the client has no handler for them (`Client:511-528`). | Small ArenaId-scoped shard bursts: school color on cast, grey on block, a ring plus capped shake on KO. ReducedFlashes and CameraShake settings are respected. |
+
+### Interfaces (all additive; no removals or renames)
+- `Combat:FacingLocked(state) → bool` and `Combat:SpeedAllowance(state, serverTime) → number` are new public methods.
+- `Combat:_impulse(s, velocity, action, resume?)`: the Impulse packet gains an optional `Resume` field. Older clients ignore it.
+- `Content.ResonanceCosts` and `Content.ResonanceRegen` are new.
+- **Behavior changes to confirm in playtest:**
+  - light attacks are free;
+  - regen is 6/s;
+  - facing is locked through the active frames, the parry window and held guard;
+  - parry and guard auto-face the nearest threat. A guard can still be crossed up, because facing stays locked while held.
+
+## 4. Invariants
+All 11 are preserved. The offline suite re-checks five of them:
+- tap-parry window kept after release;
+- serial-checked impulses that strictly increase;
+- launch restore stays authoritative during freeze;
+- arena isolation;
+- third jump rejected.
+
+F5 refines "freeze/restore preserves knockback" for **self** freezes only.
+
+## 5. Revision-1 hypotheses ruled out by the source
+- Parry timestamp mismatch: ruled out. `Bootstrap:234-235` injects a server-synced `payload.timestamp`, and the 80 ms compensation cap works.
+- Hard-coded respawn X/Z: ruled out. Every arena sits at X=0 with FloorY=0, and tutorial rooms share Z=0 (`World:92,117,125-144`).
+- Ground ray too short: ruled out. The collider is 6.4 tall and the ray is 3.5, so it reaches 0.3 studs below the feet (`Bootstrap:49`, `Combat:181`).
+- Per-swing dedupe and arena filter: correct (`Combat:127,130`).
+- Client sequence reset: no. The client script persists and resets only prediction state on spawn.
+
+## 6. Checks actually run
 
 | Check | Result |
 |---|---|
-| `git status` / `git log` / `git ls-remote` | Clean tree. One commit. Remote has only `master` (same commit). |
-| Filesystem search for the bundle, `*parabound*`, `*.luau`, `*.rbxl*`, and recent `*.zip` files | 0 matches |
-| `list_repos` (account repos) | 4 repos, no PARABOUND |
-| Luau unit tests / selene / StyLua / Studio playtest | **Not run.** No source and no Luau toolchain/Studio here. |
-| Web lookup: Roblox content-maturity wording for blood/violence | Done. Used in §7.9. |
+| `luau-compile` (official Luau CLI), all 6 modules + 4 test files, before and after | **All OK** |
+| Offline harness `parabound/tests/offline/run.sh` (real `Content.luau` + `Combat.luau` on mocked Roblox APIs) | **29/29 pass** on the patched source |
+| Same spec on the **baseline** source | **11 fail**, as expected: light gating, Heavy cost, regen, facing lock, *reverse input whiffs*, parry facing, *retreating parry gets hit*, guard facing, jump buffer, buffered jump, Resume flag. Invariant-parity checks pass on both. The baseline run stops at the allowance checks because `SpeedAllowance` does not exist there. |
+| `git apply --check` of the patch on a pristine extract, then the offline suite | Applies cleanly, 29/29 |
+| `tests/CombatQA.luau` (97 existing + 5 new), `MultiplayerQA`, any playtest | **NOT RUN.** Studio-only. I reviewed the existing assertions by hand against the changes and expect them to still pass, but that is unverified. |
 
-**Runtime claims: none.** I made no playtests and reproduced no bugs.
+The offline harness has no physics. Positions move only when a test moves them, so it validates rules, not feel.
 
----
+## 7. Remaining issues (not fixed; need Studio or latency reproduction)
 
-## 4. Phase 1 audit plan (use this for the rerun)
-
-These are **hypotheses to check, not confirmed bugs.** Each row is a common defect in this architecture (hidden collider, HRP-only collision, PreSimulation physics, serial-checked impulses), mapped to a symptom the user reported. On the rerun, confirm or rule out each one with file/symbol evidence, in this order.
-
-### 4.1 Trace order for each action
-
-For each of Light/Heavy attack, Special/ability, Parry, Jump, Dash and Drop-through:
-`client input` → `RemoteEvent intent (name, payload, client time)` → `server validate (whitelist, state, cooldown, resource, rate limit)` → `resolve (hitbox query or impulse)` → `replicate (attribute/remote/packet + serial)` → `client apply (prediction reconciliation)` → `animation / VFX / HUD`.
-Record the exact function at each hop. A hop with no function is a defect.
-
-### 4.2 Ranked suspect list
-
-| # | Symptom | Likely root causes to check | How to confirm locally |
+| # | Issue | Evidence | Proposed direction |
 |---|---|---|---|
-| 1 | "Abilities don't work" | (a) The client action key doesn't match the server whitelist/table key (case, renamed enum). (b) Server state stuck non-idle (attack/hitstun timer cleared by freeze/restore, respawn or checkpoint, but state never reset). (c) Cooldown compares client `os.clock()` with server time. (d) The rate limiter silently drops buffered inputs. (e) Server rejects with no log. | Temporarily log every server rejection with its reason, then press each action once from idle. Any silent drop is the bug. |
-| 2 | "Faulty hitboxes" | (a) The server queries the target's *server-side* position, which lags the owning client by about RTT/2 plus interpolation, so hits that look clean miss. (b) The hitbox offset uses the collider's `LookVector` instead of the facing flag. A side-view collider often doesn't rotate, so the box always spawns on one side. (c) Per-swing hit dedupe is missing (multi-hit) or keyed wrong (blocks the next swing). (d) `OverlapParams` misses the ArenaId filter, or uses a collision group that excludes HRPs. (e) The active-frame window is measured from server receive time, not attack start. | Add a dev toggle that draws server hitbox parts for 0.2 s per active frame. Test facing left and right, and test with Studio network lag. |
-| 3 | Parry timing feels wrong | Mixed clocks (`tick`/`os.clock`/`GetServerTimeNow`). The window opens on server receipt, not press time. Releasing Parry cancels the window (this violates the invariant). Parry checked after damage is applied in the same step. | Script both players. Press Parry at fixed offsets (−100…+100 ms) around the attack's active start and log the server verdict. |
-| 4 | Clunky jump/dash | (a) The movement controller writes horizontal velocity from input every PreSimulation, which erases knockback and dash. (b) No coyote time (~80–100 ms) or jump buffer (~100 ms). (c) The ground ray starts inside the collider or is too short, so it flickers grounded/airborne. (d) The impulse serial compares `>=` instead of `>`, or predicted serials are never acked, which double-boosts or drops boosts. | Log `grounded`, velocity and serial each frame for 2 s around each action. |
-| 5 | One-way shelf glitches | Collision toggled on the server while the client owns physics (the toggle must run on the network owner). The drop-through window expires before the collider clears the shelf. A shelf counts as ground from below. | Jump up through every shelf, drop through and land on each one. Repeat at low FPS (Studio frame-rate cap) to expose timing bugs. |
-| 6 | Bot misbehavior | Bots call internal functions and skip the validation path, so their behavior differs from players'. Decision tick runs every Heartbeat with no reaction delay (spam or perfect parries). Bots keep acting after game over. No shelf awareness. | Route bot actions through the same intent validator as players. Log the bot decision rate. |
-| 7 | Stock/results/rematch | The blast zone fires more than once per fall (no per-life debounce). Double KO is unhandled. Rematch doesn't reset state, cooldowns, serials, freeze or knockback. `PlayerRemoving` mid-match leaves results hanging. | Play 3 matches back to back, including a rage-quit and a simultaneous KO. |
-| 8 | Random glitches over time | Per-character connections are never disconnected on respawn, so handlers stack: doubled inputs, doubled VFX, memory growth. | Count active connections, or log handler entry counts, after 5 respawns. |
+| R1 | **Parry is nearly reaction-proof online.** The Tell fires only 80 ms before HitAt (`Combat:165`), the window opens when the server *receives* the press, and nothing rewinds. Reaction time ≈ startup − RTT, which is about 60 ms for a Longblade light at 100 ms RTT. | Design | Hold a hit's confirmation for `min(defender ping, 80 ms)` and accept a parry stamped before HitAt (a "parry grace" window). This touches hit-stop and launch timing, so playtest it first. |
+| R2 | Hit tests use server-side positions of client-owned roots (`Combat:128`), which lag. | Design | Short position history plus bounded rewind. Measure the miss rate first. |
+| R3 | Client grounded state comes from the server's `Airborne` attribute (`Client:646-653`). Landing acceleration and the jump-count reset lag by about RTT + 0.1 s ("clunky landings"). | Code | A local probe that mirrors `Combat:_ground`. **Not done**, because it can desync the JumpCount-matched predictions (F6). Pair it with sequence-based prediction acks. |
+| R4 | `PixelRenderer` reads `LocalActionState/Start/Until` (`:213-220`), but nothing writes them, so attack windups appear only after the round trip. | Code | Wire them in `Client.combat()` with a cancel on rejection; otherwise rejected presses play swings that never hit. |
+| R5 | Narrow edge: a client prediction rejected and buffered (F7) at RTT > 0.22 s can still double-boost. | Reasoned | Covered by the same ack redesign as R3. |
+| R6 | Character replaced without `Died` leaves its old state in `engine.States` (`Bootstrap:186-190`). `alive()` filters it out, so the cost is a slow leak. | Code | Call `engine:Remove(old)` in `CharacterAdded`. |
+| R7 | `_ground` walks `GetDescendants()` per fighter every Heartbeat (`Combat:174`). | Code | Track drop NoCollisionConstraints in a table. |
+| R8 | Client jump/dash prediction is blocked for 0.38 s after any parry (`Client:293` `CD_Parry`), even after a *successful* parry, which delays punishes. | Code | Gate on `ParryRecoverUntil`, or skip the gate after success. |
+| R9 | The bot walks while attacking, and its parry only reads attacks with startup over 0.13 s. | Code | Difficulty tuning pass. |
 
-### 4.3 Regression checks to add once source is available
+## 8. Local validation steps (Studio; unexecuted here)
+1. In local `PARABOUND/`, run `git apply patches/phase1-fixes.patch` (copy the patch from this branch first), then regenerate `Install.luau` / sync the 6 modules into the place.
+2. Run `tests/CombatQA.luau`. Expect the previous 97 plus 5 new checks to pass. Run `tests/MultiplayerQA.server.luau` and expect 11/11.
+3. Set Studio Settings → Network → **Incoming Replication Lag = 0.1** (if your build has it). Then Test → **2 players**.
+4. **F1:** in a duel, raise the rival to ~120% Impact, then land a Greatblade/Longblade heavy. Pass: they fly off without snapping back, and `DevelopmentHarness Inspect → Movement.Corrections` stays 0. Repeat with an air dash.
+5. **F3:** hold the direction away from the rival during a Light's startup, and confirm the hit still lands forward. As defender, hold away and tap F just before contact; it should parry.
+6. **F4/F2:** fight the Practice Bot for 2 minutes. It should keep attacking and never sit in guard. Your lights should never fail, and the Resonance bar and "NEEDS RESONANCE" label should track.
+7. **F5/F6:** at 0.25 s lag, jump, double jump and dash repeatedly. There should be no extra-high jumps or second dashes, and air hits shouldn't make you float.
+8. Re-check the invariants: one-way shelves both directions plus drop, tap-parry retention, the 3-stock flow, rematch, and the tutorial end to end.
 
-Write these against the real module APIs. Keep them pure-logic where possible (no Studio needed):
+## 9. Visual/content pass specification (ordered by player impact)
 
-1. **Cooldown:** an action is accepted, then rejected until `cooldown` has elapsed on the *server clock*, then accepted again.
-2. **Impulse serial:** a duplicate or stale serial is ignored, a newer one is applied exactly once, and predicted plus confirmed impulses add up to one boost.
-3. **Parry window:** press then immediately release, and the window stays open its full duration (invariant). A press outside the window fails.
-4. **Hitbox facing:** for facing ±1, the hitbox center lies on the facing side of the attacker.
-5. **Per-swing dedupe:** one swing hits a target once. The next swing can hit it again.
-6. **Freeze/restore:** velocity before freeze equals velocity after restore.
-7. **Stock:** one fall removes exactly one stock, and a simultaneous KO resolves deterministically.
-8. **Rematch reset:** every per-match field returns to its initial value (snapshot comparison).
-9. **ArenaId:** a hit query from arena A never returns a target in arena B.
-10. **World rebuild:** after two rebuilds, exactly one owned world folder exists.
+**Facts from the source that shape this:**
+- Fighters are anchored limb Parts carrying `SurfaceGui` palette rectangles (`PixelRenderer.sprite`: `CanvasSize` = pixel grid, `LightInfluence = 0`). They are crisp at any zoom and need no image uploads.
+- Effects are Neon `Part` shards (`Client.shard`). Backgrounds are stepped Studio geometry (`World`).
+- Audio uses five Creator Store IDs in `Content.Audio`.
+- Roblox has no custom shader API.
 
----
+1. **P0 readability.**
+   - Lengthen or brighten the commitment Tell and give the parry window its own sound, because of R1.
+   - Give the parry flash a 1–2 frame white silhouette (swap the palette in `PixelRenderer`).
+   - Keep the training hitbox overlay toggle on the backlog.
+   - Characters keep a dark 1-pixel outline row in their palettes. Backgrounds stay lower in value and saturation than fighters.
+2. **P1 animation.**
+   - `poseFor` already blends with exponential smoothing (`alpha` 19/34).
+   - Add anticipation and overshoot keys driven by `AttackHitAt`, not separate timers.
+   - Hit reactions should snap in with no blend.
+   - Add a short landing squash using `JumpCount` and `Airborne` transitions.
+3. **P1 pixel crispness.**
+   - SurfaceGui rectangles are already resolution-independent. Keep `P` (pixel size) an integer multiple on screen.
+   - Prefer limb angles in 15° steps if rotated edges look noisy.
+   - Never use `BlurEffect` or `DepthOfFieldEffect` on gameplay.
+4. **P2 parallax.**
+   - Backgrounds are static geometry. Add 3–4 layers that are offset each `RenderStepped` by `cameraX * factor` (0.1 / 0.3 / 0.6). They are cosmetic only and must never carry `DropThrough` or collision.
+   - Try `LightInfluence` around 0.3 on fighter SurfaceGuis to pick up stage tint, and verify contrast.
+5. **P2 sound and VFX.**
+   - Add `SoundGroup`s (SFX/Music/UI) behind the existing settings toggles.
+   - Use ±5% `PlaybackSpeed` variation on hits.
+   - Use `ParticleEmitter` flipbooks only if shards prove too costly.
+6. **P2 characters and customization.**
+   - Add palettes and sprite rows per cosmetic. The collider stays uniform (invariant), so cosmetics never change hitboxes.
+7. **P3 weapons and magic** (only after R1–R3 are settled).
+   - Extend `Content.Weapons` and `Combat.TIMINGS`.
+   - Every new move must have a Tell, be parryable or reflectable, and cost Resonance from `Content.ResonanceCosts`.
+8. **P3 cosmetic shop.**
+   - Server-validated soft currency. `DataStore` `UpdateAsync` with session locks.
+   - Optional Developer Products with **placeholder IDs** and an idempotent `ProcessReceipt`.
+   - Cosmetic only, and no paid random items.
+9. **P3 KO effects.** These hook into the new `KO` client handler.
+   - Default: **Pixel Shatter** (palette-colored shards, no blood).
+   - Optional: non-red **Pixel Splash**.
+   - Optional: gore-free **Puppet Pop** (clean rig pieces that fade in about 0.5 s).
+   - Per Roblox maturity guidance, pixelated or off-color blood is "unrealistic" (Minimal/Mild), while severed body parts are Restricted examples. Answer the maturity questionnaire honestly, keep everything selectable per player, and default to Shatter.
 
-## 5. Remaining bugs and local validation steps
+## 10. Budget
+No authoritative billing telemetry is available in this environment, so I report no spend figure. Work was kept bounded: a single read of each module, scripted edits, one toolchain download, and no sub-agents.
 
-No bug is confirmed yet (no source). Run these in Studio on the local machine after the Phase 1 fixes:
-
-1. **Test → Clients and Servers → 2 players** (plus a 3rd if testing arena isolation).
-2. If your Studio version has it, set **Studio Settings → Network → Incoming Replication Lag** to about 0.1 s for hitbox and parry tests.
-3. Turn on the dev hitbox overlay (row 2 above) and the server rejection log (row 1).
-4. Walk the §4.2 table top to bottom. For each row, record **pass/fail + output log excerpt**.
-5. Run 3 full matches vs a practice bot and 1 player-vs-player match. Check results and the rematch flow each time.
-6. Run tutorial and free training start to finish. Confirm checkpoints reset movement history.
-7. Rebuild the world twice mid-session. Confirm only one owned folder exists and no effects leak across ArenaIds.
-
----
-
-## 6. Invariants (carry forward unchanged)
-
-Uniform hidden collider with Humanoid state forces disabled · only HRP collides and owner torso-collision rewrites are suppressed · physics writes in PreSimulation, sprites/camera in render · server-owned damage, parry, cooldowns, stocks and results · serial-checked impulses that cannot double-boost · freeze/restore keeps knockback · one-way shelves from below/above plus temporary drop constraints · ArenaId isolation · world rebuild replaces its owned folder · checkpoint resets movement history · tapping Parry retains the window.
-
----
-
-## 7. Local visual/content pass specification (ordered by player impact)
-
-Engine facts used below are standard, documented Roblox features. **Roblox has no custom shader or fragment-program API.** All "shader-like" looks must come from art, GUI properties, `Lighting` post-effects, particles and beams. I invented no asset IDs, product IDs or uploads. Every ID is a placeholder for you to fill in.
-
-### P0: Combat readability (affects every match)
-- **Telegraphs from server frame data.** Drive startup, active and recovery poses from the same data table the server uses for timing. Animation timing must never be a separate copy.
-- **Hitstop:** 3–6 frames on hit and about 8 on a successful parry. Freeze sprite poses and VFX locally. Physics freeze stays server-authoritative (invariant).
-- **A parry the player can't miss:** a white silhouette flash (1–2 frames), a distinct high-pitched sound, a short ring burst, and a brief `ColorCorrectionEffect` contrast pulse (≤100 ms).
-- **Character vs background contrast.** Characters get a 1-px dark outline baked into the art. Backgrounds stay lower in saturation and value. Use a per-player rim/team color only if it doesn't fight cosmetics.
-- **Optional hitbox overlay** in training mode (reuse the dev overlay from §4.2).
-
-### P1: Animation posing and blending (the "smooth articulated" goal)
-- **Cut-out rig:** separate sprites for head, torso, upper/lower arm, upper/lower leg and weapon, each with a pivot. Store poses as keyframe tables (`{limb = {angle, offset}}`) and interpolate with easing (ease-out for strikes, ease-in-out for idle).
-- **Blending:** crossfade between poses over 2–4 frames. Hit-reaction and attack poses cut in instantly with no blend-in, so commitment stays readable.
-- **Rotation and pixels.** Smoothly rotating a `Pixelated` image gives jagged rotation. Pick one approach per project and apply it everywhere:
-  - pre-render limb rotations at authoring time (RotSprite-style) at 15°/22.5° steps and swap images, or
-  - author limbs at ≥4× resolution so smooth rotation stays clean.
-- **Secondary motion:** a 1–2 frame lag on hair, cape and weapon trail. Light squash/stretch on jump and land, done through size, not rotation.
-
-### P1: Pixel crispness and edge treatment ("smooth edges without blurring pixels")
-- For GUI-based sprites (`ImageLabel` in `SurfaceGui`/`BillboardGui`/`ScreenGui`), set `ResampleMode = Enum.ResamplerMode.Pixelated`.
-- For textures on 3D parts (decals, particles, beams) you can't control filtering. Upload art integer-upscaled ×4–×8 with nearest-neighbor before upload, so engine filtering only softens the outer pixel edge. Roblox caps image uploads at 1024 px, so pack accordingly.
-- **Edge smoothing:** do it at authoring time with hand-placed 1-px anti-alias pixels on silhouette curves *only*. Keep integer pixel scale on screen and snap the camera to the texel grid when idle. **Do not** use `BlurEffect` or `DepthOfFieldEffect` on gameplay layers.
-
-### P2: Parallax 2D scenes
-- 3–5 layers: far sky (static or very slow), distant silhouettes, mid set dressing, playfield, and a sparse foreground. Foreground must stay translucent or clear of the fighting area.
-- **Implementation:** with a low-FOV, near-orthographic camera, depth alone produces little parallax. Instead, offset each layer each `RenderStepped` by `cameraDelta * factor` (for example 0.1 / 0.3 / 0.6 / 1.0 / 1.2). Cosmetic layers only, never colliders.
-- **Lighting:** `SurfaceGui`/`BillboardGui` have `LightInfluence` and `Brightness`. Use partial light influence so sprites pick up scene tint. A per-stage `Atmosphere`, `ColorCorrectionEffect` grade and gentle `BloomEffect` on emissive VFX only.
-- **Per-stage palette:** at most about 3 hue families. Keep the playfield band highest in value contrast.
-
-### P2: Sound and VFX
-- `SoundGroup`s: Master, SFX, Music, UI. Expose sliders.
-- Use ±5% random `PlaybackSpeed` on repeated hits so they don't sound mechanical.
-- Priority order: parry > hit confirm > KO > movement > ambience. Cap simultaneous instances per sound.
-- Pixel VFX: `ParticleEmitter` with `FlipbookLayout` flipbooks drawn at the game's pixel scale. Low counts and short lifetimes. Every effect is ArenaId-scoped and parented under the arena's effect folder.
-- Screen shake: capped, scaled by knockback, and with an accessibility toggle (reduce/off).
-
-### P2: Original characters and customization
-- Silhouette-first design: each fighter must be identifiable in a black-fill thumbnail. Original designs only. Terraria-*inspired* proportions (big head, chunky limbs) are fine. Copied sprites, palettes or items are not.
-- Customization slots map onto the rig: head/hair, body, arms, legs, weapon skin, trail color and KO effect. Cosmetic only, with identical hitboxes (the collider is uniform by invariant).
-
-### P3: More weapons and magic (only after the §4 bugs are fixed)
-- Data-driven definitions: `startup/active/recovery` frames, damage, base and growth knockback, hitbox list per active frame, parry interaction (parryable / unparryable-with-tell / reflectable), cooldown and resource cost.
-- **Balance rule:** fast weapons trade reach or knockback for speed. Every projectile is parryable or reflectable. No new option beats the parry with no counterplay.
-- Magic projectiles are server-authoritative, ArenaId-tagged and lifetime-bounded, and run through the same validation path players and bots use.
-- Add at most 1–2 at a time. Test each against every existing weapon in training mode.
-
-### P3: Functional cosmetic shop
-- Soft currency earned from matches, granted by the server only on validated results (no client-reported rewards).
-- Persistence: `DataStoreService` with `UpdateAsync`, session locking, retry/backoff and a schema version.
-- Optional Robux items via **Developer Products / Game Passes** with **placeholder IDs**. `MarketplaceService.ProcessReceipt` must be idempotent (record `PurchaseId`, and return `PurchaseGranted` only after a successful save).
-- Cosmetic only, never stat-affecting. **No paid randomized items** (loot boxes).
-- UI: preview on the live rig, owned/equipped states, and confirmation before spending.
-
-### P3: Configurable stylized KO effects
-Roblox's current maturity guidelines ([create.roblox.com][cm], [help.roblox.com][hc]) say:
-- **Unrealistic blood** (pixelated, a different color or a different shape) at *light* levels fits **Minimal**. *Heavy* unrealistic blood moves the experience to **Mild**.
-- Realistic blood raises the label to Moderate or Restricted.
-- *Severed or severing body parts* and dismemberment are listed as **Restricted** examples (for graphic, realistic depictions).
-
-Recommendation:
-- **Default KO effect: "Pixel Shatter."** The character breaks into its own palette's colored pixels and dissolves within about 0.5 s. No blood. This is the safest choice and the clearest for competitive play.
-- **Optional "Pixel Splash"** in a non-red, stylized color (for example the character's accent color). Brief and light, not pooling. Keeps you in Minimal/Mild.
-- **"Puppet Pop" (detached limbs):** only as clean, cartoon rig pieces that pop off and bounce, with no wounds, stumps or blood, and fade within ~0.5 s. Classification is Roblox's call, so answer the maturity questionnaire honestly. If it pushes the label above your target, drop it.
-- All KO effects must be selectable per player in settings, default to Pixel Shatter, never hide the next stock's respawn, and stay ArenaId-scoped.
-
----
-
-## 8. Budget usage
-
-No authoritative billing telemetry is available in this environment, so I report no figure. Work was kept small: a few shell and file searches, one repo listing, one web search, and this document.
-
-## 9. Next concrete integration action
-
-**Make the source reachable, then rerun Phase 1.** Either:
-
-- **Recommended:** run Phase 1 in **local** Claude Code on the Mac, at `/Users/bobby4abby/Documents/Codex/2026-10-02/create-a-100x100-brick-in-studio/outputs/PARABOUND`, with Studio MCP connected. Only that environment can read the code *and* playtest. Use §4 as the checklist.
-- **Or, cloud:** commit the six modules plus docs and tests to this branch (for example under `parabound/src`, `parabound/docs`, `parabound/tests`), or attach `CLOUD_SOURCE_BUNDLE.md` to the session, and start a new cloud session. Runtime tests there will still be marked unexecuted.
-
-[cm]: https://create.roblox.com/docs/production/promotion/content-maturity
-[hc]: https://en.help.roblox.com/hc/en-us/articles/8862768451604-Content-Maturity-Labels
+## 11. Next concrete integration action
+On the Mac, in `/Users/bobby4abby/Documents/Codex/2026-10-02/create-a-100x100-brick-in-studio/outputs/PARABOUND`:
+1. Copy `parabound/patches/phase1-fixes.patch` from branch `claude/laughing-newton-7a8z9n` and run `git apply patches/phase1-fixes.patch`.
+2. Regenerate `Install.luau`.
+3. Run §8 steps 2–7 in Studio and record pass/fail in `tests/QA_RESULTS.json`.
+4. If F1–F8 hold, take R1 (parry grace window) as the first Phase 2 design change.

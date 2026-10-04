@@ -1,0 +1,632 @@
+diff --git a/src/client/Client.client.luau b/src/client/Client.client.luau
+index 612b92c..5a26272 100644
+--- a/src/client/Client.client.luau
++++ b/src/client/Client.client.luau
+@@ -38,12 +38,14 @@ local predictedJumps, lastJumpPrediction, nextDashPrediction = 0, -math.huge, 0
+ local localDashUntil, packetDashUntil, packetLaunchUntil, packetHitStopUntil = 0, 0, 0, 0
+ local groundStableFor, localInputBusyUntil, lastImpulseSerial, impulseEpoch = 0, 0, 0, -math.huge
+ local predictions = {Jump = {}, Dash = {}}
++local frozenLocalVelocity = nil
+ local function resetMotionPrediction()
+  predictedJumps, lastJumpPrediction, nextDashPrediction = 0, -math.huge, 0
+  localDashUntil, packetDashUntil, packetLaunchUntil, packetHitStopUntil = 0, 0, 0, 0
+  groundStableFor, localInputBusyUntil, lastImpulseSerial = 0, 0, 0
+  impulseEpoch = World:GetServerTimeNow()
+  predictions = {Jump = {}, Dash = {}}
++ frozenLocalVelocity = nil
+ end
+ local mapIndex = 1
+ local function send(action, payload)
+@@ -123,7 +125,9 @@ local function fighterCard(side)
+  stock.TextXAlignment = Enum.TextXAlignment.Right; stock.Position = UDim2.new(.6, 0, 0, 24); stock.Size = UDim2.new(.4, -10, 0, 24)
+  local track = frame(c, UDim2.new(1, -20, 0, 4), UDim2.fromOffset(10, 58), BORDER)
+  local fill = frame(track, UDim2.fromScale(1, 1), nil, GOLD)
+- return {Frame = c, Name = n, Impact = impact, Stocks = stock, Guard = fill}
++ local resonanceTrack = frame(c, UDim2.new(1, -20, 0, 3), UDim2.fromOffset(10, 64), BORDER)
++ local resonance = frame(resonanceTrack, UDim2.fromScale(1, 1), nil, Color3.fromRGB(124, 194, 218))
++ return {Frame = c, Name = n, Impact = impact, Stocks = stock, Guard = fill, Resonance = resonance}
+ end
+ local ownCard, rivalCard = fighterCard("left"), fighterCard("right")
+ local mapTitle = label(hud, "PARABOUND", 12, CREAM)
+@@ -484,7 +488,8 @@ net.Effect.OnClientEvent:Connect(function(kind, data)
+    for i = #pending, 1, -1 do if now - pending[i].At > 1 then table.remove(pending, i) end end
+    for i, prediction in ipairs(pending) do
+     if action ~= "Jump" or prediction.Count == data.JumpCount then
+-     predicted = now - prediction.At < .22
++     -- Already applied locally (pending entries expire after 1s); re-applying at high ping double-boosts.
++     predicted = true
+      table.remove(pending, i); break
+     end
+    end
+@@ -494,7 +499,18 @@ net.Effect.OnClientEvent:Connect(function(kind, data)
+    for _, prediction in ipairs(predictions.Jump) do newestCount = math.max(newestCount, prediction.Count) end
+    predictedJumps = newestCount
+   end
+-  if not predicted then root.AssemblyLinearVelocity = data.Velocity end
++  if not predicted then
++   -- The owner is authoritative on the axis an impulse does not set; the server's copy is stale by replication.
++   local velocity, current = data.Velocity, root.AssemblyLinearVelocity
++   if action == "Jump" or action == "Drop" or action == "FastFall" then velocity = Vector3.new(current.X, velocity.Y, 0)
++   elseif action == "Dash" then velocity = Vector3.new(velocity.X, current.Y, 0)
++   elseif action == "Freeze" then frozenLocalVelocity = current
++   elseif action == "Restore" then
++    if data.Resume == true and frozenLocalVelocity then velocity = frozenLocalVelocity end
++    frozenLocalVelocity = nil
++   end
++   root.AssemblyLinearVelocity = velocity
++  end
+   if action == "Launch" or action == "Freeze" then localDashUntil = 0 end
+   if action == "Restore" then packetHitStopUntil = 0 end
+   idleHoldX = nil
+@@ -525,6 +541,22 @@ net.Effect.OnClientEvent:Connect(function(kind, data)
+    shard(pos + Vector3.new(0, .4, .4), Vector3.new(.24, .11, .12), color, Vector3.new(facing * (1.1 + i * .18), vertical, 0), .17)
+   end
+   if setting("CameraShake") then shakeUntil = os.clock() + .09; shakePower = parry and .035 or .055 end
++ elseif kind == "Arcana" then
++  local school = Content.Schools[data.School]
++  local color = school and school.Color or GOLD
++  local count = setting("ReducedFlashes") and 3 or 6
++  for i = 1, count do
++   shard(pos + Vector3.new(facing * 1.2, .6, .4), Vector3.new(.22, .22, .12), color, Vector3.new(facing * (1.4 + i * .55), (i % 2 == 0 and .35 or -.35), 0), .22)
++  end
++ elseif kind == "Block" then
++  shard(pos + Vector3.new(-facing * .9, .5, .4), Vector3.new(.3, .3, .12), MUTED, Vector3.new(facing * .4, 0, 0), .12)
++ elseif kind == "KO" then
++  local count = setting("ReducedFlashes") and 4 or 8
++  for i = 1, count do
++   local angle = (i / count) * math.pi * 2
++   shard(pos, Vector3.new(.3, .3, .14), CREAM, Vector3.new(math.cos(angle) * 3, math.sin(angle) * 3, 0), .35)
++  end
++  if setting("CameraShake") then shakeUntil = os.clock() + .12; shakePower = .07 end
+  end
+ end)
+ 
+@@ -557,13 +589,14 @@ local function opponent(character, root)
+  return nearest
+ end
+ local function updateCard(card, model, name)
+- if not model then card.Name.Text = name; card.Impact.Text = "—"; card.Stocks.Text = ""; card.Guard.Size = UDim2.fromScale(0, 1); return end
++ if not model then card.Name.Text = name; card.Impact.Text = "—"; card.Stocks.Text = ""; card.Guard.Size = UDim2.fromScale(0, 1); card.Resonance.Size = UDim2.fromScale(0, 1); return end
+  card.Name.Text = name
+  card.Impact.Text = tostring(math.floor((tonumber(model:GetAttribute("Impact")) or 0) + .5)) .. "%"
+  local stocks = math.clamp(tonumber(model:GetAttribute("Stocks")) or 3, 0, 3)
+  local diamonds = {}; for i = 1, 3 do table.insert(diamonds, i <= stocks and "◆" or "◇") end
+  card.Stocks.Text = table.concat(diamonds, " ")
+  card.Guard.Size = UDim2.fromScale(math.clamp((tonumber(model:GetAttribute("Guard")) or 100) / 100, 0, 1), 1)
++ card.Resonance.Size = UDim2.fromScale(math.clamp((tonumber(model:GetAttribute("Resonance")) or 100) / 100, 0, 1), 1)
+ end
+ local rigConnections = {}
+ local function clearRigConnections()
+@@ -695,7 +728,7 @@ local function layoutForViewport(viewport)
+  hud.Position = UDim2.fromOffset(14, compactLayout and 44 or 64)
+  hud.Size = UDim2.new(1, -28, 0, compactLayout and 44 or 76)
+  for _, card in ipairs({ownCard, rivalCard}) do
+-  card.Frame.Size = UDim2.new(compactLayout and .23 or .26, 0, 0, compactLayout and 42 or 70)
++  card.Frame.Size = UDim2.new(compactLayout and .23 or .26, 0, 0, compactLayout and 46 or 70)
+   card.Name.Position = UDim2.fromOffset(compactLayout and 6 or 10, compactLayout and 1 or 5)
+   card.Name.Size = UDim2.new(1, compactLayout and -12 or -20, 0, compactLayout and 14 or 19)
+   card.Impact.Position = UDim2.fromOffset(compactLayout and 6 or 10, compactLayout and 15 or 24)
+@@ -704,6 +737,8 @@ local function layoutForViewport(viewport)
+   card.Stocks.Size = UDim2.new(.4, compactLayout and -6 or -10, 0, compactLayout and 17 or 24)
+   card.Guard.Parent.Position = UDim2.fromOffset(compactLayout and 6 or 10, compactLayout and 39 or 58)
+   card.Guard.Parent.Size = UDim2.new(1, compactLayout and -12 or -20, 0, compactLayout and 3 or 4)
++  card.Resonance.Parent.Position = UDim2.fromOffset(compactLayout and 6 or 10, compactLayout and 43 or 64)
++  card.Resonance.Parent.Size = UDim2.new(1, compactLayout and -12 or -20, 0, compactLayout and 2 or 3)
+  end
+  mapTitle.Position = UDim2.new(.25, 0, 0, compactLayout and 0 or 7)
+  mapTitle.Size = UDim2.new(.50, 0, 0, compactLayout and 16 or 20)
+@@ -771,8 +806,10 @@ local renderConnection = RunService.RenderStepped:Connect(function(dt)
+    clockText.Text = string.format("%d:%02d", math.floor(remaining / 60), remaining % 60)
+   else clockText.Text = queueText and "PLAYER DUEL SEARCH" or string.upper(tostring(arena and arena.Mode or "SHORT TUTORIAL")) end
+   local remaining = tonumber(character:GetAttribute("CD_Arcana1")) or math.max(0, (tonumber(character:GetAttribute("CooldownArcana1")) or 0) - now)
+-  abilityText.Text = (touch and "RESONANCE CUT" or preferredGamepad and "RT · RESONANCE CUT" or "E · RESONANCE CUT") .. (remaining > .05 and string.format("  %.1fs", remaining) or "  READY")
+-  if touchButtons.SURGE then touchButtons.SURGE.Text = remaining > .05 and string.format("SURGE\n%.1fs", remaining) or "SURGE" end
++  local costs = Content.ResonanceCosts or {}
++  local starved = (tonumber(character:GetAttribute("Resonance")) or 100) < (costs.Arcana1 or 24)
++  abilityText.Text = (touch and "RESONANCE CUT" or preferredGamepad and "RT · RESONANCE CUT" or "E · RESONANCE CUT") .. (remaining > .05 and string.format("  %.1fs", remaining) or starved and "  NEEDS RESONANCE" or "  READY")
++  if touchButtons.SURGE then touchButtons.SURGE.Text = remaining > .05 and string.format("SURGE\n%.1fs", remaining) or starved and "SURGE\nLOW" or "SURGE" end
+   for name, key in pairs({DASH = "CD_Dash", PARRY = "CD_Parry"}) do
+    local cd = tonumber(character:GetAttribute(key)) or 0
+    if touchButtons[name] then touchButtons[name].Text = cd > .05 and string.format("%s\n%.1fs", name, cd) or name end
+diff --git a/src/server/Bootstrap.server.luau b/src/server/Bootstrap.server.luau
+index 25139b6..4ecd11e 100644
+--- a/src/server/Bootstrap.server.luau
++++ b/src/server/Bootstrap.server.luau
+@@ -261,6 +261,8 @@ Run.Heartbeat:Connect(function(dt)
+     if tr.MotionX and st.IFrameUntil<t then
+      local velocity=st.ExpectedLaunchVelocity or Vector3.zero
+      local speed=st.LaunchUntil>t and math.max(65,math.abs(velocity.X)+25) or st.DashUntil>t and 60 or 28
++     -- Knockback/dash speed outlives LaunchUntil/DashUntil on the owner; budget from the decaying impulse allowance.
++     speed=math.max(speed,engine:SpeedAllowance(st,tr.MotionTime))
+      local ok,ping=pcall(function()return p:GetNetworkPing()end);ping=ok and math.clamp(ping,0,.15) or .05
+      local budget=speed*(t-tr.MotionTime+ping)+1.2
+      if math.abs(r.Position.X-tr.MotionX)>budget then
+@@ -283,7 +285,9 @@ Run.Heartbeat:Connect(function(dt)
+    local positioning=active or (isLesson and d and d.Step==4)
+    local speed=positioning and (math.abs(dx)>4.6 and sign*(active and 16 or 12) or 0) or 0
+    if math.abs(dx)<2.7 and b.Practice then speed=-sign*7 end
+-   st.Facing=sign
++   if not engine:FacingLocked(st) then st.Facing=sign end
++   -- A parry press enters held guard until GuardEnd; bots must release like a tapped input.
++   if b.ReleaseGuardAt and t>=b.ReleaseGuardAt then b.ReleaseGuardAt=nil;engine:Intent(m,'GuardEnd',{}) end
+    local blocked=t<(st.StunUntil or 0) or t<(st.HitStopUntil or 0) or t<(st.DashUntil or 0) or t<(st.LaunchUntil or 0)
+    if not blocked then
+     local vx=r.AssemblyLinearVelocity.X;local rate=math.abs(speed)>0 and 100 or 160
+@@ -296,7 +300,7 @@ Run.Heartbeat:Connect(function(dt)
+    end
+    if b.Practice and t>b.NextDecision then
+     b.NextDecision=t+.22;local ts=engine:Get(target)
+-    if ts and ts.Pending and t-ts.Pending.Started>.13 and math.abs(dx)<7 and b.Random:NextNumber()<.18 then engine:Intent(m,'Parry',{}) end
++    if ts and ts.Pending and t-ts.Pending.Started>.13 and math.abs(dx)<7 and b.Random:NextNumber()<.18 then if engine:Intent(m,'Parry',{}) then b.ReleaseGuardAt=t+.2 end end
+     if ts and ts.Airborne and not st.Airborne and math.abs(dx)<13 and t>b.NextJump and b.Random:NextNumber()<.2 then engine:Intent(m,'Jump',{});b.NextJump=t+2 end
+    end
+    if s.Mode=='Crucible' then if r.Position.Y< -12 or r.Position.X<s.Arena.MinX-16 or r.Position.X>s.Arena.MaxX+16 then knockout(m,s) end
+diff --git a/src/server/Combat.luau b/src/server/Combat.luau
+index 60912c9..d690db1 100644
+--- a/src/server/Combat.luau
++++ b/src/server/Combat.luau
+@@ -5,6 +5,10 @@ local Content = require(game:GetService("ReplicatedStorage"):WaitForChild("PARAB
+ local Combat = {}; Combat.__index = Combat
+ local PARRY_TIME, PERFECT_TIME, MISS_RECOVERY = .16, .075, .18
+ local COYOTE_TIME, JUMP_BUFFER, ACTIVE_TIME = .12, .13, .07
++local COSTS = Content.ResonanceCosts or {Light=0,Heavy=10,Dash=8,Arcana1=24}
++local RESONANCE_REGEN = Content.ResonanceRegen or 6
++-- Mirrors Client.client.luau: launched flight holds speed for LaunchUntil, then air approach() decelerates at 70.
++local LAUNCH_HOLD, AIR_DECELERATION, SPEED_MARGIN = .35, 70, 25
+ local TIMINGS = {
+  Longblade={Light=.16,Heavy=.30,LightRecovery=.20,HeavyRecovery=.32,Range=7},
+  TwinFangs={Light=.12,Heavy=.24,LightRecovery=.17,HeavyRecovery=.26,Range=6},
+@@ -63,7 +67,7 @@ function Combat:Reset(model)
+  s.Health,s.Guard,s.Resonance,s.Overtone,s.Impact=s.MaxHealth,100,100,0,0
+  s.Dead,s.Guarding,s.WantsGuard,s.Airborne=false,false,false,false
+  s.Facing=s.Facing or 1; s.JumpCount,s.Combo,s.LastHit=0,0,0
+- s.Cooldowns={}; s.Pending=nil; s.BufferedAction=nil; s.FreezeVelocity=nil; s.ExpectedLaunchVelocity=nil; s.LastImpulseVelocity=nil; s.LastImpulseAction=nil; s.LastImpulseAt=nil
++ s.Cooldowns={}; s.Pending=nil; s.BufferedAction=nil; s.FreezeVelocity=nil; s.FreezeFromLaunch=nil; s.SpeedAllowance=nil; s.SpeedAllowanceAt=nil; s.ExpectedLaunchVelocity=nil; s.LastImpulseVelocity=nil; s.LastImpulseAction=nil; s.LastImpulseAt=nil
+  for _,key in ipairs({"BusyUntil","ParryUntil","ParryStarted","ParryRecoverUntil","AttackUntil","AttackStarted","AttackHitAt","TellAt","StunUntil","DashUntil","LaunchUntil","HitStopUntil","IFrameUntil","SlowUntil","JumpBufferedUntil","GroundIgnoreUntil","ActionStart","ActionEnd"}) do s[key]=0 end
+  s.ParryResolved=false; s.LastGrounded=-math.huge; s.AttackState=nil; s.ShieldUntil=nil
+  local hum=humOf(model); if hum then hum.MaxHealth=s.MaxHealth; hum.Health=s.Health end
+@@ -79,9 +83,26 @@ function Combat:_canAct(s) return alive(s) and self.Clock>=s.BusyUntil and self.
+ function Combat:_cooldown(s,key,duration)
+  if (s.Cooldowns[key] or 0)>self.Clock then return false end; s.Cooldowns[key]=self.Clock+duration; return true
+ end
++function Combat:FacingLocked(s)
++ -- Facing is committed through an attack's active frames and while parrying or guarding,
++ -- so held movement cannot swing a hitbox behind the attacker or turn a guard away from a threat.
++ if not s then return false end
++ return (s.Pending~=nil and self.Clock<s.Pending.ActiveUntil) or self.Clock<(s.ParryUntil or 0) or s.WantsGuard==true
++end
++function Combat:_faceThreat(s)
++ local root=rootOf(s.Model); if not root then return end
++ local best,bestDistance
++ for model,other in pairs(self.States) do
++  if other~=s and alive(other) and other.Mode==s.Mode and other.Arena==s.Arena and (not s.Team or not other.Team or other.Team~=s.Team) then
++   local r=rootOf(model); local d=r and math.abs(r.Position.X-root.Position.X)
++   if d and d<=16 and (not bestDistance or d<bestDistance) then best,bestDistance=r,d end
++  end
++ end
++ if best and bestDistance>.05 then s.Facing=best.Position.X>=root.Position.X and 1 or -1 end
++end
+ function Combat:_facing(s,direction)
+  local x=typeof(direction)=="Vector3" and direction.X or direction
+- if not finite(x) or math.abs(x)<.05 then return end
++ if not finite(x) or math.abs(x)<.05 or self:FacingLocked(s) then return end
+  s.Facing=x>=0 and 1 or -1
+  -- Facing flips sprite art, while the upright physical collider keeps a fixed orientation.
+ end
+@@ -89,14 +110,20 @@ function Combat:_cancel(s)
+  s.Pending=nil; s.BufferedAction=nil; s.AttackState=nil; s.AttackUntil=0; s.AttackHitAt=0; s.TellAt=0
+  s.ActionStart=self.Clock; s.ActionEnd=self.Clock
+ end
+-function Combat:_impulse(s,velocity,action)
++function Combat:SpeedAllowance(s,at)
++ -- Horizontal speed an owner can legitimately still carry from authoritative impulses at server time `at`.
++ if not s or not s.SpeedAllowance then return 0 end
++ return math.max(0,s.SpeedAllowance-AIR_DECELERATION*math.max(0,(at or self.Clock)-s.SpeedAllowanceAt-LAUNCH_HOLD))
++end
++function Combat:_impulse(s,velocity,action,resume)
+  local root=rootOf(s.Model); if not root then return false end
++ s.SpeedAllowance=math.max(self:SpeedAllowance(s,self.Clock),math.abs(velocity.X)+SPEED_MARGIN); s.SpeedAllowanceAt=self.Clock
+  if not s.Player then root.AssemblyLinearVelocity=velocity end
+  s.ImpulseSerial=math.max(s.ImpulseSerial or 0,s.Model:GetAttribute("ImpulseSerial") or 0)+1
+  s.Model:SetAttribute("ImpulseSerial",s.ImpulseSerial)
+  s.LastImpulseVelocity=velocity; s.LastImpulseAction=action; s.LastImpulseAt=self.Clock
+  -- Only this server constructs impulse packets; the owning client applies each serial once.
+- self:_effect("Impulse",{Model=s.Model,Velocity=velocity,Action=action,Serial=s.ImpulseSerial,IssuedAt=self.Clock,
++ self:_effect("Impulse",{Model=s.Model,Velocity=velocity,Action=action,Serial=s.ImpulseSerial,IssuedAt=self.Clock,Resume=resume or nil,
+   JumpCount=s.JumpCount,DashUntil=s.DashUntil,LaunchUntil=s.LaunchUntil,HitStopUntil=s.HitStopUntil,GroundIgnoreUntil=s.GroundIgnoreUntil,ArenaId=s.Model:GetAttribute("ArenaId")})
+  return true
+ end
+@@ -104,7 +131,10 @@ function Combat:_freeze(s,duration)
+  local root=rootOf(s.Model); local starting=root and not s.FreezeVelocity
+  if starting then
+   -- A just-issued launch has not reached its network owner yet; keep that intended impulse.
+-  s.FreezeVelocity=s.LastImpulseAction=="Launch" and s.LastImpulseAt==self.Clock and s.LastImpulseVelocity or root.AssemblyLinearVelocity
++  local launch=s.LastImpulseAction=="Launch" and s.LastImpulseAt==self.Clock
++  s.FreezeVelocity=launch and s.LastImpulseVelocity or root.AssemblyLinearVelocity
++  -- Server-observed owner velocity is stale by replication; only launches are authoritative on restore.
++  s.FreezeFromLaunch=launch
+  end
+  s.HitStopUntil=math.max(s.HitStopUntil,self.Clock+duration)
+  if starting then self:_impulse(s,Vector3.zero,"Freeze") end
+@@ -117,7 +147,7 @@ function Combat:_launch(s,target,attack,scale)
+  local velocity=Vector3.new(sign*attack.Knockback*impactScale,math.min(attack.Knockback*.54*impactScale,56),0)
+  target.ExpectedLaunchVelocity=velocity
+  target.Airborne=true; target.JumpCount=math.max(target.JumpCount,1); target.LaunchUntil=self.Clock+(scale and .16 or .35); target.GroundIgnoreUntil=target.LaunchUntil
+- if target.FreezeVelocity then target.FreezeVelocity=velocity else self:_impulse(target,velocity,"Launch") end
++ if target.FreezeVelocity then target.FreezeVelocity=velocity; target.FreezeFromLaunch=true else self:_impulse(target,velocity,"Launch") end
+ end
+ function Combat:_hit(s,p)
+  local root=rootOf(s.Model); if not root then return end
+@@ -204,11 +234,12 @@ function Combat:Intent(model,action,payload)
+   -- Releasing stops the held guard, while a tap keeps its initial counter window.
+   self:_attr(s); return true
+  end
+- if payload.direction~=nil then self:_facing(s,payload.direction) end
++ if payload.direction~=nil and action~="Parry" and action~="Guard" then self:_facing(s,payload.direction) end
+  if action=="Parry" or action=="Guard" then
+   if s.WantsGuard then return action=="Guard" end
+   if not self:_canAct(s) or s.Guard<10 or not self:_cooldown(s,"Parry",.38) then return false end
+   local age=finite(payload.timestamp) and clamp(self.Clock-payload.timestamp,0,.08) or 0
++  self:_faceThreat(s)
+   s.Guard-=10; s.ParryCompensated=age; s.ParryStarted=self.Clock-age; s.ParryUntil=self.Clock+PARRY_TIME-age
+   s.ParryResolved=false; s.ParryRecoverUntil=s.ParryUntil+MISS_RECOVERY; s.WantsGuard=true; s.Guarding=false; s.BusyUntil=s.ParryUntil
+   s.ActionStart=self.Clock; s.ActionEnd=s.ParryRecoverUntil
+@@ -216,15 +247,16 @@ function Combat:Intent(model,action,payload)
+  elseif action=="Feint" then
+   if s.Pending and self.Clock<s.Pending.TellAt then self:_cancel(s); s.BusyUntil=self.Clock+.08; s.Cooldowns.Attack=s.BusyUntil; self:_effect("Feint",{Model=model}); self:_attr(s); return true end; return false
+  elseif action=="Dash" then
+-  if not self:_canAct(s) or s.Resonance<8 or not self:_cooldown(s,"Dash",.65) then return false end
++  if not self:_canAct(s) or s.Resonance<COSTS.Dash or not self:_cooldown(s,"Dash",.65) then return false end
+   local root=rootOf(model); if not root then return false end
+-  s.Resonance-=8; s.DashUntil=self.Clock+.16; s.IFrameUntil=self.Clock+.10; s.ActionStart=self.Clock; s.ActionEnd=s.DashUntil
++  s.Resonance-=COSTS.Dash; s.DashUntil=self.Clock+.16; s.IFrameUntil=self.Clock+.10; s.ActionStart=self.Clock; s.ActionEnd=s.DashUntil
+   self:_impulse(s,Vector3.new(s.Facing*44,root.AssemblyLinearVelocity.Y,0),"Dash")
+   self:_effect("Dash",{Model=model}); self:_attr(s); return true
+  elseif action=="Jump" then
+   if s.Airborne and s.JumpCount>=2 then
+    local root=rootOf(model); local landing=root and self.Clock>=s.GroundIgnoreUntil and root.AssemblyLinearVelocity.Y<=1.5 and self:_ground(s)
+-   if not landing then return false end
++   -- Still rejected now, but buffered so a press just before the server sees the landing is not lost.
++   if not landing then s.JumpBufferedUntil=self.Clock+JUMP_BUFFER; return false end
+   end
+   s.JumpBufferedUntil=self.Clock+JUMP_BUFFER
+   if self:_canAct(s) then
+@@ -247,13 +279,13 @@ function Combat:Intent(model,action,payload)
+    return false
+   end
+   local w=Content.Weapons[s.Weapon]; local t=TIMINGS[s.Weapon] or {Light=w.Startup,Heavy=w.Startup*1.4,LightRecovery=w.Recovery,HeavyRecovery=w.Recovery*1.3,Range=math.min(w.Range,9)}
+-  local heavy=action=="Heavy"; local cost=heavy and 14 or 7
++  local heavy=action=="Heavy"; local cost=COSTS[action] or 0
+   if s.Resonance<cost or (s.Cooldowns.Attack or 0)>self.Clock then return false end
+   s.Resonance-=cost
+   self:_beginAttack(s,{Damage=w.Damage*(heavy and 1.5 or 1),Range=t.Range,Knockback=w.Knockback*(heavy and 1.4 or 1),Stun=heavy and .27 or .18,Heavy=heavy,Vertical=s.Airborne and 4.5 or 3.5},action,t[action],t[action.."Recovery"]); return true
+  elseif action=="Arcana1" then
+-  if not self:_canAct(s) or s.Resonance<24 or not self:_cooldown(s,"Arcana1",5) then return false end
+-  s.Resonance-=24
++  if not self:_canAct(s) or s.Resonance<COSTS.Arcana1 or not self:_cooldown(s,"Arcana1",5) then return false end
++  s.Resonance-=COSTS.Arcana1
+   self:_beginAttack(s,{Damage=13,Range=12,Knockback=24,Stun=.20,Vertical=3.5},action,.32,.30,true)
+   self:_effect("Arcana",{Model=model,Position=rootOf(model) and rootOf(model).Position,School=s.School,Ability=Content.Schools[s.School].Abilities[1],Radius=3}); return true
+  end
+@@ -263,7 +295,7 @@ function Combat:Step(dt)
+  dt=clamp(tonumber(dt) or 0,0,.1); self.Clock=Workspace:GetServerTimeNow()
+  for _,s in pairs(self.States) do
+   if alive(s) then
+-   s.Resonance=clamp(s.Resonance+dt*4,0,100)
++   s.Resonance=clamp(s.Resonance+dt*RESONANCE_REGEN,0,100)
+    if s.ParryUntil>0 and self.Clock>=s.ParryUntil then s.ParryUntil=0; if not s.ParryResolved then s.BusyUntil=math.max(s.BusyUntil,s.ParryRecoverUntil) end end
+    s.Guarding=s.WantsGuard and s.Guard>0 and s.ParryUntil==0 and self.Clock>=s.BusyUntil and self.Clock>=s.StunUntil
+    s.Guard=clamp(s.Guard+dt*(s.Guarding and -7 or 10),0,100)
+@@ -286,7 +318,7 @@ function Combat:Step(dt)
+      -- Player-owned assemblies freeze locally from the packet/attribute; NPCs simulate here.
+      if not s.Player then root.AssemblyLinearVelocity=Vector3.zero end
+     elseif s.FreezeVelocity then
+-     local velocity=s.FreezeVelocity; s.FreezeVelocity=nil; self:_impulse(s,velocity,"Restore")
++     local velocity,resume=s.FreezeVelocity,not s.FreezeFromLaunch; s.FreezeVelocity=nil; s.FreezeFromLaunch=nil; self:_impulse(s,velocity,"Restore",resume)
+     end
+     local floor=self:_ground(s)
+     local grounded=floor~=nil and self.Clock>=s.GroundIgnoreUntil and root.AssemblyLinearVelocity.Y<=1.5 and self.Clock>=s.HitStopUntil
+diff --git a/src/shared/Content.luau b/src/shared/Content.luau
+index 9943318..d6e514d 100644
+--- a/src/shared/Content.luau
++++ b/src/shared/Content.luau
+@@ -29,4 +29,8 @@ C.Weapons.TwinFangs.Startup=.12;C.Weapons.TwinFangs.Recovery=.17;C.Weapons.TwinF
+ C.Weapons.Spear.Startup=.20;C.Weapons.Spear.Recovery=.23;C.Weapons.Spear.Range=9;C.Weapons.Spear.Damage=11
+ C.Weapons.Greatblade.Startup=.30;C.Weapons.Greatblade.Recovery=.35;C.Weapons.Greatblade.Range=7.5;C.Weapons.Greatblade.Damage=15
+ C.Schools.Ember.Abilities={'Resonance Cut'}
++-- Shared by server validation and the client HUD. Light attacks are the core verb and stay free;
++-- regeneration must sustain ordinary heavy/dash use across a 3-stock duel.
++C.ResonanceCosts={Light=0,Heavy=10,Dash=8,Arcana1=24}
++C.ResonanceRegen=6
+ return C
+diff --git a/tests/CombatQA.luau b/tests/CombatQA.luau
+index 641b469..1db527e 100644
+--- a/tests/CombatQA.luau
++++ b/tests/CombatQA.luau
+@@ -121,6 +121,14 @@ local ok,err=pcall(function()
+  reset(); sa.Mode="Crucible"; sb.Mode="Crucible"; engine:Intent(a,"Light",{}); step(.25)
+  check("PvP damage raises impact rather than HP",sb.Health==500 and sb.Impact>0)
+  check("Stocks remain match-controller owned",sb.Stocks==3)
++ -- Phase 1 cloud fixes (also covered offline by tests/offline/combat_spec.luau).
++ reset(); sa.Resonance=0; check("Light is never resource-gated",engine:Intent(a,"Light",{}))
++ reset(); engine:Intent(a,"Light",{direction=Vector3.new(1,0,0)}); engine:Intent(a,"Move",{direction=-1})
++ check("Attack facing committed through active frames",sa.Facing==1); step(.25); check("Reverse input cannot swing hitbox behind",sb.Health<500)
++ reset(); sb.Facing=1; engine:Intent(a,"Light",{}); step(.05); engine:Intent(b,"Parry",{direction=1}); engine:Intent(b,"GuardEnd",{}); step(.25)
++ check("Retreating parry faces threat and negates",sb.Health==500 and sb.Facing==-1)
++ reset(); a.HumanoidRootPart.AssemblyLinearVelocity=Vector3.new(12,18,0); engine:_freeze(sa,.035); step(.08)
++ check("Self freeze restore marked Resume",impulses[#impulses].Action=="Restore" and impulses[#impulses].Resume==true)
+ end)
+ engine:Remove(a); engine:Remove(b); a:Destroy(); b:Destroy(); floor:Destroy(); shelf:Destroy()
+ if not ok then error(err) end
+diff --git a/tests/offline/combat_spec.luau b/tests/offline/combat_spec.luau
+new file mode 100644
+index 0000000..df294e7
+--- /dev/null
++++ b/tests/offline/combat_spec.luau
+@@ -0,0 +1,125 @@
++-- Offline regression checks for Combat.luau (run via tests/offline/run.sh). Deterministic clock, no physics:
++-- positions only change when a check moves a root. Studio-only behavior stays in tests/CombatQA.luau.
++local results, failures = {}, 0
++local effects, events, impulses = {}, {}, {}
++local function check(name, condition)
++	table.insert(results, name)
++	if condition then print("PASS  " .. name) else failures += 1; print("FAIL  " .. name) end
++end
++
++local floor = Instance.new("Part")
++floor.Name = "Floor"; floor.Position = Vector3.new(0, 0, 0); floor.Size = Vector3.new(200, 1, 10); floor.Parent = workspaceRoot
++table.insert(floors, floor)
++local GROUND_Y = 0.5 + 3.2 -- floor top + half collider height
++
++local function fighter(name, x)
++	local m = Instance.new("Model"); m.Name = name
++	local r = Instance.new("Part"); r.Name = "HumanoidRootPart"
++	r.Size = Vector3.new(1.6, 6.4, .9); r.Position = Vector3.new(x, GROUND_Y, 0)
++	r.AssemblyLinearVelocity = Vector3.zero; r.AssemblyAngularVelocity = Vector3.zero; r.Parent = m
++	m.Parent = workspaceRoot
++	return m, r
++end
++
++local engine = Combat.new(function(kind, data)
++	table.insert(effects, kind); if kind == "Impulse" then table.insert(impulses, data) end
++end, function(kind) table.insert(events, kind) end)
++local arena = {}
++local a, ar = fighter("A", 0)
++local b, br = fighter("B", 5)
++local sa = engine:Register(a, {Mode = "Training", Health = 500, Team = "A", Arena = arena})
++local sb = engine:Register(b, {Mode = "Training", Health = 500, Team = "B", Arena = arena})
++
++local function step(seconds)
++	local frames = math.max(1, math.floor(seconds * 60 + .5))
++	for _ = 1, frames do now += 1 / 60; engine:Step(1 / 60) end
++end
++local function reset()
++	now += 5
++	engine:Reset(a); engine:Reset(b); engine:SetLoadout(a, "Longblade", "Ember")
++	ar.Position = Vector3.new(0, GROUND_Y, 0); br.Position = Vector3.new(5, GROUND_Y, 0)
++	ar.AssemblyLinearVelocity = Vector3.zero; br.AssemblyLinearVelocity = Vector3.zero
++	sa.Facing = 1; sb.Facing = -1; sb.Arena = arena; sb.Team = "B"
++	table.clear(effects); table.clear(events); table.clear(impulses); engine:Step(0)
++end
++local function lastImpulse() return impulses[#impulses] end
++
++-- Resource economy: light attacks are never resource-gated (F2).
++reset(); sa.Resonance = 0
++check("Light accepted at zero resonance", engine:Intent(a, "Light", {}) == true)
++reset(); engine:Intent(a, "Heavy", {})
++check("Heavy costs 10 resonance", math.abs(sa.Resonance - 90) < 1e-6)
++reset(); sa.Resonance = 5
++check("Heavy rejected below cost", engine:Intent(a, "Heavy", {}) == false)
++reset(); engine:Intent(a, "Dash", {})
++check("Dash costs 8 resonance", math.abs(sa.Resonance - 92) < 1e-6)
++reset(); engine:Intent(a, "Arcana1", {})
++check("Arcana keeps 24 cost (CombatQA parity)", math.abs(sa.Resonance - 76) < 1e-6)
++reset(); sa.Resonance = 50; step(1)
++check("Resonance regenerates ~6/s", math.abs(sa.Resonance - 56) < .2)
++
++-- Baseline hit + isolation (regression parity with CombatQA).
++reset(); engine:Intent(a, "Light", {}); step(.3)
++check("Light hits target in front", sb.Health < 500)
++reset(); sb.Arena = {}; engine:Intent(a, "Light", {}); step(.3)
++check("Arena isolation holds", sb.Health == 500)
++
++-- Facing commitment (F6): held movement during startup cannot swing the hitbox behind the attacker.
++reset(); engine:Intent(a, "Light", {direction = Vector3.new(1, 0, 0)})
++engine:Intent(a, "Move", {direction = Vector3.new(-1, 0, 0)})
++check("Facing locked during attack startup", sa.Facing == 1)
++step(.3)
++check("Attack still lands forward after reverse input", sb.Health < 500)
++engine:Intent(a, "Move", {direction = Vector3.new(-1, 0, 0)})
++check("Facing turns once active frames end", sa.Facing == -1)
++
++-- Parry/guard facing (F6): a retreating defender still parries the attacker in front.
++reset(); sb.Facing = 1 -- defender was walking away from A
++engine:Intent(a, "Light", {}); step(.05)
++check("Parry accepted while retreating", engine:Intent(b, "Parry", {direction = Vector3.new(1, 0, 0)}) == true)
++check("Parry faces nearest threat", sb.Facing == -1)
++engine:Intent(b, "GuardEnd", {}); step(.25)
++check("Retreating parry negates hit", sb.Health == 500 and (table.find(events, "Parry") ~= nil or table.find(events, "PerfectParry") ~= nil))
++reset(); engine:Intent(b, "Guard", {}); engine:Intent(b, "Move", {direction = Vector3.new(1, 0, 0)})
++check("Held guard keeps facing while backing off", sb.Facing == -1)
++
++-- Invariant: tapping Parry retains its window.
++reset(); engine:Intent(b, "Parry", {}); local deadline = sb.ParryUntil; engine:Intent(b, "GuardEnd", {})
++check("Tap release keeps parry deadline", sb.ParryUntil == deadline and not sb.WantsGuard)
++step(.6)
++check("Released parry can be used again", engine:Intent(b, "Parry", {}) == true)
++
++-- Jump contract and landing buffer (F7).
++reset(); engine:Intent(a, "Jump", {}); engine:Intent(a, "Jump", {})
++ar.Position = Vector3.new(0, 30, 0); ar.AssemblyLinearVelocity = Vector3.new(0, -5, 0); sa.GroundIgnoreUntil = 0
++local before = #impulses
++check("Third airborne jump still rejected", engine:Intent(a, "Jump", {}) == false)
++check("Rejected landing jump is buffered", sa.JumpBufferedUntil > now)
++ar.Position = Vector3.new(0, GROUND_Y, 0); ar.AssemblyLinearVelocity = Vector3.zero; step(1 / 60)
++check("Buffered jump fires on landing", #impulses == before + 1 and lastImpulse().Action == "Jump" and lastImpulse().JumpCount == 1)
++reset(); engine:Intent(a, "Jump", {}); engine:Intent(a, "Jump", {})
++ar.Position = Vector3.new(0, 30, 0); sa.GroundIgnoreUntil = 0; engine:Intent(a, "Jump", {})
++step(.3); ar.Position = Vector3.new(0, GROUND_Y, 0); ar.AssemblyLinearVelocity = Vector3.zero; before = #impulses; step(1 / 60)
++check("Expired jump buffer does not fire", #impulses == before)
++
++-- Freeze/restore provenance (F5).
++reset(); ar.AssemblyLinearVelocity = Vector3.new(12, 18, 0); engine:_freeze(sa, .035); step(.08)
++check("Self freeze restores with Resume flag", lastImpulse().Action == "Restore" and lastImpulse().Resume == true and lastImpulse().Velocity == Vector3.new(12, 18, 0))
++reset(); engine:_freeze(sb, .04); engine:_launch(sa, sb, {Knockback = 28}); step(.08)
++check("Launch during freeze restores authoritatively", lastImpulse().Action == "Restore" and lastImpulse().Resume == nil and lastImpulse().Velocity.X == 28)
++reset(); engine:_launch(sb, sa, {Knockback = 28}); engine:_freeze(sa, .035); step(.08)
++check("Launch then hit-stop restores authoritatively", lastImpulse().Action == "Restore" and lastImpulse().Resume == nil and lastImpulse().Velocity.X == -28)
++local serials = true
++for i = 2, #impulses do if impulses[i].Serial <= impulses[i - 1].Serial then serials = false end end
++check("Impulse serials strictly increase", serials)
++
++-- Speed allowance used by Bootstrap's movement validator (F1).
++reset(); local t0 = now; engine:_impulse(sa, Vector3.new(100, 20, 0), "Launch")
++check("Allowance holds through launch", engine:SpeedAllowance(sa, t0 + .3) == 125)
++check("Allowance decays after launch hold", math.abs(engine:SpeedAllowance(sa, t0 + 1.35) - 55) < 1e-6)
++check("Allowance floors at zero", engine:SpeedAllowance(sa, t0 + 10) == 0)
++engine:_impulse(sa, Vector3.zero, "Freeze")
++check("Freeze impulse does not erase allowance", engine:SpeedAllowance(sa, now) >= 125)
++
++print(string.format("%d checks, %d failed", #results, failures))
++if failures > 0 then error("offline combat checks failed") end
+diff --git a/tests/offline/prelude.luau b/tests/offline/prelude.luau
+new file mode 100644
+index 0000000..61db28a
+--- /dev/null
++++ b/tests/offline/prelude.luau
+@@ -0,0 +1,112 @@
++-- Minimal Roblox API stand-ins so src/server/Combat.luau runs under the stock `luau` CLI.
++-- Only what Combat touches is modeled: a settable server clock, Vector3, attributes/children,
++-- a downward Raycast against registered floor parts, and inert Debris/ReplicatedStorage.
++local now = 1000
++
++local Vector3 = {}
++local V3 = {__type = "Vector3"}
++V3.__index = function(v, k)
++	if k == "Magnitude" then return math.sqrt(v.X * v.X + v.Y * v.Y + v.Z * v.Z) end
++	return nil
++end
++function Vector3.new(x, y, z) return setmetatable({X = x or 0, Y = y or 0, Z = z or 0}, V3) end
++V3.__add = function(a, b) return Vector3.new(a.X + b.X, a.Y + b.Y, a.Z + b.Z) end
++V3.__sub = function(a, b) return Vector3.new(a.X - b.X, a.Y - b.Y, a.Z - b.Z) end
++V3.__mul = function(a, b)
++	if type(a) == "number" then a, b = b, a end
++	if type(b) == "number" then return Vector3.new(a.X * b, a.Y * b, a.Z * b) end
++	return Vector3.new(a.X * b.X, a.Y * b.Y, a.Z * b.Z)
++end
++V3.__eq = function(a, b) return a.X == b.X and a.Y == b.Y and a.Z == b.Z end
++V3.__tostring = function(v) return string.format("(%g, %g, %g)", v.X, v.Y, v.Z) end
++Vector3.zero = Vector3.new(0, 0, 0)
++
++local Color3 = {fromRGB = function(r, g, b) return {R = r / 255, G = g / 255, B = b / 255} end}
++local Enum = {RaycastFilterType = {Exclude = "Exclude", Include = "Include"}}
++local RaycastParams = {new = function() return {FilterDescendantsInstances = {}} end}
++
++local function typeof(v)
++	local mt = getmetatable(v)
++	if type(mt) == "table" and mt.__type then return mt.__type end
++	return type(v)
++end
++local function warn(...) print("WARN", ...) end
++
++local Methods = {}
++local InstanceMeta = {__type = "Instance"}
++InstanceMeta.__index = function(o, k)
++	local m = Methods[k]
++	if m ~= nil then return m end
++	return rawget(o, "_p")[k]
++end
++InstanceMeta.__newindex = function(o, k, v)
++	local p = rawget(o, "_p")
++	if k == "Parent" then
++		local old = p.Parent
++		if old then
++			local list = rawget(old, "_c")
++			local i = table.find(list, o)
++			if i then table.remove(list, i) end
++		end
++		if v then table.insert(rawget(v, "_c"), o) end
++	end
++	p[k] = v
++end
++local Instance = {}
++function Instance.new(className)
++	local p = {ClassName = className, Name = className}
++	if className == "NoCollisionConstraint" then p.Enabled = true end
++	return setmetatable({_p = p, _c = {}, _a = {}}, InstanceMeta)
++end
++function Methods:SetAttribute(k, v) rawget(self, "_a")[k] = v end
++function Methods:GetAttribute(k) return rawget(self, "_a")[k] end
++function Methods:IsA(c)
++	local cls = rawget(self, "_p").ClassName
++	return cls == c or (c == "BasePart" and cls == "Part")
++end
++function Methods:FindFirstChild(name)
++	for _, c in ipairs(rawget(self, "_c")) do if c.Name == name then return c end end
++	return nil
++end
++function Methods:FindFirstChildOfClass(cls)
++	for _, c in ipairs(rawget(self, "_c")) do if c.ClassName == cls then return c end end
++	return nil
++end
++function Methods:GetChildren() return table.clone(rawget(self, "_c")) end
++function Methods:GetDescendants()
++	local out = {}
++	local function walk(o) for _, c in ipairs(rawget(o, "_c")) do table.insert(out, c); walk(c) end end
++	walk(self)
++	return out
++end
++function Methods:Destroy() self.Parent = nil end
++
++local workspaceRoot = Instance.new("Workspace")
++local floors = {}
++local Workspace = {}
++function Workspace:GetServerTimeNow() return now end
++function Workspace:Raycast(origin, direction, params)
++	local excluded = {}
++	for _, e in ipairs(params.FilterDescendantsInstances or {}) do excluded[e] = true end
++	local best, bestTop
++	for _, part in ipairs(floors) do
++		if part.Parent and not excluded[part] then
++			local top = part.Position.Y + part.Size.Y / 2
++			if math.abs(origin.X - part.Position.X) <= part.Size.X / 2 and top <= origin.Y and top >= origin.Y + direction.Y then
++				if not bestTop or top > bestTop then best, bestTop = part, top end
++			end
++		end
++	end
++	if best then return {Instance = best, Position = Vector3.new(origin.X, bestTop, origin.Z)} end
++	return nil
++end
++local Debris = {AddItem = function() end}
++local ReplicatedStorage = {}
++function ReplicatedStorage:WaitForChild() return self end
++local game = {}
++function game:GetService(name)
++	if name == "Workspace" then return Workspace end
++	if name == "Debris" then return Debris end
++	if name == "ReplicatedStorage" then return ReplicatedStorage end
++	error("unmocked service " .. tostring(name))
++end
+diff --git a/tests/offline/run.sh b/tests/offline/run.sh
+new file mode 100755
+index 0000000..6ee1bb4
+--- /dev/null
++++ b/tests/offline/run.sh
+@@ -0,0 +1,17 @@
++#!/usr/bin/env sh
++# Runs Combat.luau outside Studio against tests/offline/combat_spec.luau.
++# Usage (from anywhere): tests/offline/run.sh [path/to/luau]   SRC=<dir> overrides the src/ tree under test.
++set -e
++LUAU=${1:-luau}
++ROOT=$(cd "$(dirname "$0")/../.." && pwd)
++SRC=${SRC:-$ROOT/src}
++OUT=${TMPDIR:-/tmp}/parabound_offline_$$.luau
++trap 'rm -f "$OUT"' EXIT
++{
++	cat "$ROOT/tests/offline/prelude.luau"
++	echo 'local __Content = (function()'; cat "$SRC/shared/Content.luau"; echo; echo 'end)()'
++	echo 'local require = function() return __Content end'
++	echo 'local Combat = (function()'; cat "$SRC/server/Combat.luau"; echo; echo 'end)()'
++	cat "$ROOT/tests/offline/combat_spec.luau"
++} > "$OUT"
++"$LUAU" "$OUT"
