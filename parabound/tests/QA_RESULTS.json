@@ -1,0 +1,506 @@
+{
+  "Build": "PvP pixel rebuild",
+  "Combat": {
+    "1": {
+      "Passed": true,
+      "Name": "Longblade Light accepted"
+    },
+    "2": {
+      "Passed": true,
+      "Name": "Longblade Light exact startup"
+    },
+    "3": {
+      "Passed": true,
+      "Name": "Animation timing published"
+    },
+    "4": {
+      "Passed": true,
+      "Name": "Longblade bounded server damage"
+    },
+    "5": {
+      "Passed": true,
+      "Name": "Active window cannot hit a target twice"
+    },
+    "6": {
+      "Passed": true,
+      "Name": "Commitment tell emitted"
+    },
+    "7": {
+      "Passed": true,
+      "Name": "Longblade Heavy accepted"
+    },
+    "8": {
+      "Passed": true,
+      "Name": "Longblade Heavy exact startup"
+    },
+    "9": {
+      "Passed": true,
+      "Name": "Animation timing published"
+    },
+    "10": {
+      "Passed": true,
+      "Name": "Longblade bounded server damage"
+    },
+    "11": {
+      "Passed": true,
+      "Name": "Active window cannot hit a target twice"
+    },
+    "12": {
+      "Passed": true,
+      "Name": "Commitment tell emitted"
+    },
+    "13": {
+      "Passed": true,
+      "Name": "TwinFangs Light accepted"
+    },
+    "14": {
+      "Passed": true,
+      "Name": "TwinFangs Light exact startup"
+    },
+    "15": {
+      "Passed": true,
+      "Name": "Animation timing published"
+    },
+    "16": {
+      "Passed": true,
+      "Name": "TwinFangs bounded server damage"
+    },
+    "17": {
+      "Passed": true,
+      "Name": "Active window cannot hit a target twice"
+    },
+    "18": {
+      "Passed": true,
+      "Name": "Commitment tell emitted"
+    },
+    "19": {
+      "Passed": true,
+      "Name": "TwinFangs Heavy accepted"
+    },
+    "20": {
+      "Passed": true,
+      "Name": "TwinFangs Heavy exact startup"
+    },
+    "21": {
+      "Passed": true,
+      "Name": "Animation timing published"
+    },
+    "22": {
+      "Passed": true,
+      "Name": "TwinFangs bounded server damage"
+    },
+    "23": {
+      "Passed": true,
+      "Name": "Active window cannot hit a target twice"
+    },
+    "24": {
+      "Passed": true,
+      "Name": "Commitment tell emitted"
+    },
+    "25": {
+      "Passed": true,
+      "Name": "Spear Light accepted"
+    },
+    "26": {
+      "Passed": true,
+      "Name": "Spear Light exact startup"
+    },
+    "27": {
+      "Passed": true,
+      "Name": "Animation timing published"
+    },
+    "28": {
+      "Passed": true,
+      "Name": "Spear bounded server damage"
+    },
+    "29": {
+      "Passed": true,
+      "Name": "Active window cannot hit a target twice"
+    },
+    "30": {
+      "Passed": true,
+      "Name": "Commitment tell emitted"
+    },
+    "31": {
+      "Passed": true,
+      "Name": "Spear Heavy accepted"
+    },
+    "32": {
+      "Passed": true,
+      "Name": "Spear Heavy exact startup"
+    },
+    "33": {
+      "Passed": true,
+      "Name": "Animation timing published"
+    },
+    "34": {
+      "Passed": true,
+      "Name": "Spear bounded server damage"
+    },
+    "35": {
+      "Passed": true,
+      "Name": "Active window cannot hit a target twice"
+    },
+    "36": {
+      "Passed": true,
+      "Name": "Commitment tell emitted"
+    },
+    "37": {
+      "Passed": true,
+      "Name": "Perfect parry negates damage"
+    },
+    "38": {
+      "Passed": true,
+      "Name": "Perfect parry distinct event"
+    },
+    "39": {
+      "Passed": true,
+      "Name": "Parry cancels attacker pending"
+    },
+    "40": {
+      "Passed": true,
+      "Name": "Normal parry negates damage"
+    },
+    "41": {
+      "Passed": true,
+      "Name": "Normal parry distinct event"
+    },
+    "42": {
+      "Passed": true,
+      "Name": "Guard start costs meter"
+    },
+    "43": {
+      "Passed": true,
+      "Name": "Guard input does not recharge parry"
+    },
+    "44": {
+      "Passed": true,
+      "Name": "Missed parry recovery"
+    },
+    "45": {
+      "Passed": true,
+      "Name": "Holding guard follows miss recovery"
+    },
+    "46": {
+      "Passed": true,
+      "Name": "Guard absorbs damage and loses meter"
+    },
+    "47": {
+      "Passed": true,
+      "Name": "Guard release immediate"
+    },
+    "48": {
+      "Passed": true,
+      "Name": "Tap release retains initial parry window"
+    },
+    "49": {
+      "Passed": true,
+      "Name": "Parry spam rejected"
+    },
+    "50": {
+      "Passed": true,
+      "Name": "Tap preserves exact window deadline"
+    },
+    "51": {
+      "Passed": true,
+      "Name": "Released tap parry succeeds"
+    },
+    "52": {
+      "Passed": true,
+      "Name": "Successful released tap does not start held guard"
+    },
+    "53": {
+      "Passed": true,
+      "Name": "Pre-tell feint accepted"
+    },
+    "54": {
+      "Passed": true,
+      "Name": "Feint prevents damage"
+    },
+    "55": {
+      "Passed": true,
+      "Name": "Post-tell feint rejected"
+    },
+    "56": {
+      "Passed": true,
+      "Name": "Recovery input buffered"
+    },
+    "57": {
+      "Passed": true,
+      "Name": "Buffer defers resource charge"
+    },
+    "58": {
+      "Passed": true,
+      "Name": "Buffered action starts next attack"
+    },
+    "59": {
+      "Passed": true,
+      "Name": "Arena isolation"
+    },
+    "60": {
+      "Passed": true,
+      "Name": "Friendly fire prevented"
+    },
+    "61": {
+      "Passed": true,
+      "Name": "Vertical hurtbox bounded"
+    },
+    "62": {
+      "Passed": true,
+      "Name": "Being struck cancels pending heavy"
+    },
+    "63": {
+      "Passed": true,
+      "Name": "Dash accepted"
+    },
+    "64": {
+      "Passed": true,
+      "Name": "Dash and immunity timing"
+    },
+    "65": {
+      "Passed": true,
+      "Name": "Movement remains accepted during lock"
+    },
+    "66": {
+      "Passed": true,
+      "Name": "First jump accepted"
+    },
+    "67": {
+      "Passed": true,
+      "Name": "Second jump accepted"
+    },
+    "68": {
+      "Passed": true,
+      "Name": "Third jump rejected"
+    },
+    "69": {
+      "Passed": true,
+      "Name": "Jump count published"
+    },
+    "70": {
+      "Passed": true,
+      "Name": "Ground immunity published"
+    },
+    "71": {
+      "Passed": true,
+      "Name": "Jump authority packet"
+    },
+    "72": {
+      "Passed": true,
+      "Name": "Impulse serial increases"
+    },
+    "73": {
+      "Passed": true,
+      "Name": "Impulse serial survives reset"
+    },
+    "74": {
+      "Passed": true,
+      "Name": "Freeze packet once"
+    },
+    "75": {
+      "Passed": true,
+      "Name": "Step does not overwrite player velocity"
+    },
+    "76": {
+      "Passed": true,
+      "Name": "Restore packet preserves pre-freeze velocity"
+    },
+    "77": {
+      "Passed": true,
+      "Name": "Launch during freeze queues velocity"
+    },
+    "78": {
+      "Passed": true,
+      "Name": "Queued launch restored authoritatively"
+    },
+    "79": {
+      "Passed": true,
+      "Name": "Owner impulse does not raw-write velocity"
+    },
+    "80": {
+      "Passed": true,
+      "Name": "Owner launch survives immediate hit stop"
+    },
+    "81": {
+      "Passed": true,
+      "Name": "Impulse serial survives same-model registration"
+    },
+    "82": {
+      "Passed": true,
+      "Name": "Shelf below collider feet cannot ground"
+    },
+    "83": {
+      "Passed": true,
+      "Name": "Rising fighter ignores one-way shelf"
+    },
+    "84": {
+      "Passed": true,
+      "Name": "Descending fighter grounds on shelf"
+    },
+    "85": {
+      "Passed": true,
+      "Name": "Active drop collision exception excludes shelf"
+    },
+    "86": {
+      "Passed": true,
+      "Name": "Disabled collision exception permits landing"
+    },
+    "87": {
+      "Passed": true,
+      "Name": "Stale permanent NC permits descending shelf ground"
+    },
+    "88": {
+      "Passed": true,
+      "Name": "Ordinary floor drop rejected"
+    },
+    "89": {
+      "Passed": true,
+      "Name": "Designated floor drop accepted"
+    },
+    "90": {
+      "Passed": true,
+      "Name": "Drop cooldown"
+    },
+    "91": {
+      "Passed": true,
+      "Name": "Arcana resource cost"
+    },
+    "92": {
+      "Passed": true,
+      "Name": "Arcana cooldown"
+    },
+    "93": {
+      "Passed": true,
+      "Name": "Removed ability rejects"
+    },
+    "94": {
+      "Passed": true,
+      "Name": "Client damage intent rejects"
+    },
+    "95": {
+      "Passed": true,
+      "Name": "Compensation capped"
+    },
+    "96": {
+      "Passed": true,
+      "Name": "PvP damage raises impact rather than HP"
+    },
+    "97": {
+      "Passed": true,
+      "Name": "Stocks remain match-controller owned"
+    }
+  },
+  "Multiplayer": {
+    "Players": {
+      "1": "Player1",
+      "2": "Player2"
+    },
+    "Success": true,
+    "Checks": {
+      "1": {
+        "Name": "Two real simulated Player clients",
+        "Passed": true
+      },
+      "2": {
+        "Name": "Tutorial rooms isolated",
+        "Passed": true
+      },
+      "3": {
+        "Name": "Real player queue pairs both clients",
+        "Passed": true
+      },
+      "4": {
+        "Name": "Duel contains no bot",
+        "Passed": true
+      },
+      "5": {
+        "Name": "Server hit raises real opponent Impact",
+        "Passed": true
+      },
+      "6": {
+        "Name": "Real opponent parry prevents added Impact",
+        "Passed": true
+      },
+      "7": {
+        "Name": "Stock loss 1",
+        "Passed": true
+      },
+      "8": {
+        "Name": "Stock loss 2",
+        "Passed": true
+      },
+      "9": {
+        "Name": "Stock loss 3",
+        "Passed": true
+      },
+      "10": {
+        "Name": "Human duel winner recorded",
+        "Passed": true
+      },
+      "11": {
+        "Name": "Mutual rematch restores three stocks",
+        "Passed": true
+      }
+    }
+  },
+  "Movement": {
+    "KeyboardDoubleJump": {
+      "PeakRootY": 15.6868,
+      "MaxCount": 2
+    },
+    "DashVX": 44,
+    "IdleDrift": 0,
+    "OneWayLandingRootY": 10.198,
+    "DropRootY": 3.199
+  },
+  "Tutorial": {
+    "ActualAttackInputs": "3 keyboard attacks advanced step4->5",
+    "TapParry": "Asynchronously scheduled virtual keyboard tap produced PerfectParry and completed onboarding"
+  },
+  "Device": {
+    "Phone": {
+      "Profile": "iPhone13 landscape",
+      "Touch": true,
+      "Resolution": "844x390",
+      "SafeViewport": "749x367",
+      "Layout": "Compact UI reviewed visually",
+      "PointerMovementAndJump": true
+    },
+    "Controller": {
+      "Profile": "Xbox",
+      "GamepadEnabled": true,
+      "MappedButtonADoubleJump": true,
+      "PhysicalHardware": "Untested"
+    }
+  },
+  "Performance": {
+    "ContextSensitiveSamplesFPS": [
+      15,
+      54.98
+    ],
+    "FocusedSpriteStepMS": 0.1723,
+    "Limit": "Studio test context varies; not a sustained hardware performance certification"
+  },
+  "Scope": {
+    "PlayerDuels": true,
+    "PracticeBot": "Explicitly labeled",
+    "Tutorial": true,
+    "Story": false,
+    "Breach": false,
+    "RPGMenus": false
+  },
+  "Console": {
+    "GameScriptErrors": "None in final solo check",
+    "ExternalPluginWarnings": "GetCollisionGroups deprecated"
+  },
+  "Limitations": [
+    "Local-server queue; no cross-server matchmaking",
+    "Rating/preferences/progress kept for current server only",
+    "Physical devices and adverse network conditions require further validation"
+  ],
+  "NativeProject": {
+    "SavedLatest": true,
+    "File": "PARABOUND.rbxl",
+    "Confirmed": "Studio Saved to exact output path"
+  }
+}
